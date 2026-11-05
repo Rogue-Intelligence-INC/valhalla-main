@@ -680,8 +680,21 @@ std::wstring find_binary() {
     return L"";
 }
 
+std::wstring models_root() {
+    wchar_t buffer[32768];
+    DWORD count = GetEnvironmentVariableW(L"VALHALLA_MODELS_ROOT", buffer, 32768);
+    if (count > 0 && count < 32768) return buffer;
+    const std::wstring exe = find_binary();
+    const auto slash = exe.find_last_of(L"\\/");
+    if (slash != std::wstring::npos) {
+        const std::wstring beside = exe.substr(0, slash) + L"\\models";
+        if (GetFileAttributesW(beside.c_str()) != INVALID_FILE_ATTRIBUTES) return beside;
+    }
+    return kModelsRoot;
+}
+
 std::wstring model_directory(const std::string& repo_id) {
-    return std::wstring(kModelsRoot) + L"\\" + leaf_name(repo_id);
+    return models_root() + L"\\" + leaf_name(repo_id);
 }
 
 bool weights_present(const std::wstring& directory) {
@@ -1211,7 +1224,7 @@ bool download_model(const std::string& repo_id, DownloadStatus status, void* use
         if (status) status(text, user);
     };
     std::wstring dest = model_directory(repo_id);
-    CreateDirectoryW(kModelsRoot, nullptr);
+    CreateDirectoryW(models_root().c_str(), nullptr);
     CreateDirectoryW(dest.c_str(), nullptr);
     if (weights_present(dest)) return true;
 

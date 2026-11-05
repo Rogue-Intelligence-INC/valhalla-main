@@ -3,6 +3,8 @@
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QGuiApplication>
 #include <QUrl>
 #include <QWindow>
@@ -50,15 +52,21 @@ QString badgeFor(const QString& path, bool zh) {
 }
 
 std::wstring resolveDataDir() {
-    const QString app = QCoreApplication::applicationDirPath();
-    const QStringList candidates = {app, QDir::cleanPath(app + "/.."), QDir::cleanPath(app + "/../..")};
-    for (const QString& dir : candidates) {
-        if (QFileInfo::exists(dir + "/settings.json") || QFileInfo::exists(dir + "/knowledge.json") ||
-            QFileInfo::exists(dir + "/conversations")) {
-            return QDir::toNativeSeparators(dir).toStdWString();
+    const QString dir = QCoreApplication::applicationDirPath() + QStringLiteral("/data/main");
+    QDir().mkpath(dir);
+    if (!QFileInfo::exists(dir + "/settings.json") && !QFileInfo::exists(dir + "/knowledge.json")) {
+        const QString app = QCoreApplication::applicationDirPath();
+        const QStringList old = {app, QDir::cleanPath(app + "/.."), QDir::cleanPath(app + "/../..")};
+        for (const QString& from : old) {
+            if (from == dir) continue;
+            if (!QFileInfo::exists(from + "/settings.json") && !QFileInfo::exists(from + "/knowledge.json")) continue;
+            for (const char* name : {"settings.json", "knowledge.json"}) {
+                if (QFileInfo::exists(from + "/" + name)) QFile::copy(from + "/" + name, dir + "/" + name);
+            }
+            break;
         }
     }
-    return QDir::toNativeSeparators(app).toStdWString();
+    return QDir::toNativeSeparators(dir).toStdWString();
 }
 
 }  // namespace
