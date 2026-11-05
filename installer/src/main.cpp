@@ -3,6 +3,8 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QListWidget>
 #include <QMessageBox>
@@ -23,9 +25,30 @@ using Microsoft::WRL::ComPtr;
 
 namespace {
 
-const QString kAppTarget = "C:/Ai/VAL-DAL";
-const QString kModelTarget = "C:/Ai/models/Qwen2.5-0.5B-Instruct";
 const QString kModelName = "Qwen2.5-0.5B-Instruct";
+
+// One installer binary serves all editions; the package drops a setup.json
+// next to the installer exe to say which app this package installs.
+struct SetupConfig {
+    QString label = QStringLiteral("瓦序 VAL-DAL");
+    QString target = QStringLiteral("C:/Ai/VAL-DAL");
+    QString exe = QStringLiteral("Valhalla.exe");
+    QString shortcut = QStringLiteral("瓦序 VAL-DAL");
+    QString dataSub = QStringLiteral("main");
+};
+
+SetupConfig g_cfg;
+
+void loadConfig() {
+    QFile f(QCoreApplication::applicationDirPath() + "/setup.json");
+    if (!f.open(QIODevice::ReadOnly)) return;
+    const QJsonObject o = QJsonDocument::fromJson(f.readAll()).object();
+    if (o.contains("label")) g_cfg.label = o.value("label").toString();
+    if (o.contains("target")) g_cfg.target = o.value("target").toString();
+    if (o.contains("exe")) g_cfg.exe = o.value("exe").toString();
+    if (o.contains("shortcut")) g_cfg.shortcut = o.value("shortcut").toString();
+    if (o.contains("dataSub")) g_cfg.dataSub = o.value("dataSub").toString();
+}
 
 qint64 dirSize(const QString& path) {
     qint64 total = 0;
@@ -69,7 +92,7 @@ bool makeShortcut(const QString& linkPath, const QString& target, const QString&
     if (FAILED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&link)))) return false;
     link->SetPath(target.toStdWString().c_str());
     link->SetWorkingDirectory(workDir.toStdWString().c_str());
-    link->SetDescription(L"瓦序 VAL-DAL");
+    link->SetDescription(g_cfg.shortcut.toStdWString().c_str());
     ComPtr<IPersistFile> file;
     if (FAILED(link.As(&file))) return false;
     return SUCCEEDED(file->Save(linkPath.toStdWString().c_str(), TRUE));
@@ -97,18 +120,21 @@ protected:
         auto prog = [this](int v) { emit progress(v); };
         auto lg = [this](const QString& s) { emit log(s); };
 
-        emit log("正在安装瓦序 VAL-DAL 到 " + kAppTarget + " …");
-        if (!copyRecursive(appFrom, kAppTarget, done, total, prog, lg, error)) {
+        const QString appTarget = g_cfg.target;
+        const QString modelTarget = appTarget + "/models/" + kModelName;
+        emit log("正在安装 " + g_cfg.label + " 到 " + appTarget + " …");
+        if (!copyRecursive(appFrom, appTarget, done, total, prog, lg, error)) {
             emit finishedAll(false, error);
             return;
         }
-        emit log("正在安装小模型（Qwen2.5-0.5B，约 1 GB）到 " + kModelTarget + " …");
-        if (!copyRecursive(modelFrom, kModelTarget, done, total, prog, lg, error)) {
+        emit log("正在安装小模型（Qwen2.5-0.5B，约 1 GB）到 " + modelTarget + " …");
+        if (!copyRecursive(modelFrom, modelTarget, done, total, prog, lg, error)) {
             emit finishedAll(false, error);
             return;
         }
 
-        const QString settingsPath = kAppTarget + "/settings.json";
+        QDir().mkpath(appTarget + "/data/" + g_cfg.dataSub);
+        const QString settingsPath = appTarget + "/data/" + g_cfg.dataSub + "/settings.json";
         if (!QFileInfo::exists(settingsPath)) {
             QFile settings(settingsPath);
             if (settings.open(QIODevice::WriteOnly | QIODevice::Text)) {
@@ -117,18 +143,18 @@ protected:
         }
 
         QSettings env("HKEY_CURRENT_USER\\Environment", QSettings::NativeFormat);
-        env.setValue("VALHALLA_BASE_EXE", QString(kAppTarget + "/valhalla_base.exe").replace('/', '\\'));
+        env.setValue("VALHALLA_BASE_EXE", QString(appTarget + "/valhalla_base.exe").replace('/', '\\'));
         env.sync();
         DWORD_PTR ignored = 0;
         SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0,
                             reinterpret_cast<LPARAM>(L"Environment"), SMTO_ABORTIFHUNG, 3000, &ignored);
 
         const QString desktop = QDir::homePath() + "/Desktop";
-        if (makeShortcut(desktop + "/瓦序 VAL-DAL.lnk", kAppTarget + "/Valhalla.exe", kAppTarget)) {
-            emit log("已创建桌面快捷方式：瓦序 VAL-DAL");
+        if (makeShortcut(desktop + "/" + g_cfg.shortcut + ".lnk", appTarget + "/" + g_cfg.exe, appTarget)) {
+            emit log("已创建桌面快捷方式：" + g_cfg.shortcut);
         }
         emit progress(100);
-        emit finishedAll(true, "安装完成。模型和 CUDA 运行库都已就位，可以直接打开瓦序。");
+        emit finishedAll(true, "安装完成。模型和 CUDA 运行库都已就位，可以直接打开 " + g_cfg.label + "。");
     }
 
 private:
@@ -139,20 +165,20 @@ class Window : public QWidget {
     Q_OBJECT
 public:
     Window() {
-        setWindowTitle("瓦序 VAL-DAL · A测版安装");
+        setWindowTitle(g_cfg.label + " · A测版安装");
         resize(560, 460);
         auto* layout = new QVBoxLayout(this);
-        auto* title = new QLabel("瓦序 VAL-DAL（A测版）");
+        auto* title = new QLabel(g_cfg.label + "（A测版）");
         title->setStyleSheet("font-size:20px;font-weight:bold;");
         auto* intro = new QLabel(
             "Rogue Intelligence Inc.（Delaware, USA）\n"
-            "一键安装：主程序 + 本地小模型（Qwen2.5-0.5B）+ CUDA 运行库，装好即可离线使用。\n"
-            "安装位置：C:\\Ai\\VAL-DAL，模型装到 C:\\Ai\\models。");
+            "一键安装：程序 + 本地小模型（Qwen2.5-0.5B）+ CUDA 运行库，装好即可离线使用。\n"
+            "全部装到 " + g_cfg.target.replace('/', '\\') + "：程序、小模型和各自的数据分开存放。");
         intro->setWordWrap(true);
         bar_ = new QProgressBar();
         log_ = new QListWidget();
         install_ = new QPushButton("开始安装");
-        run_ = new QCheckBox("安装完成后打开瓦序");
+        run_ = new QCheckBox("安装完成后打开 " + g_cfg.label);
         run_->setChecked(true);
         layout->addWidget(title);
         layout->addWidget(intro);
@@ -175,8 +201,8 @@ private:
             if (ok) {
                 install_->setText("安装完成");
                 if (run_->isChecked()) {
-                    qputenv("VALHALLA_BASE_EXE", QString(kAppTarget + "/valhalla_base.exe").replace('/', '\\').toUtf8());
-                    QProcess::startDetached(kAppTarget + "/Valhalla.exe", {}, kAppTarget);
+                    qputenv("VALHALLA_BASE_EXE", QString(g_cfg.target + "/valhalla_base.exe").replace('/', '\\').toUtf8());
+                    QProcess::startDetached(g_cfg.target + "/" + g_cfg.exe, {}, g_cfg.target);
                 }
             } else {
                 install_->setText("安装失败，点重试");
@@ -200,6 +226,7 @@ int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("VAL-DAL Setup");
     app.setOrganizationName("Rogue Intelligence");
+    loadConfig();
     QFont font("SimHei");
     app.setFont(font);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
