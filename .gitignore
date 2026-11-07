@@ -36,3 +36,11 @@ envsetup-student.done
 release/
 student/android/app/src/main/jniLibs/
 student/android/app/src/main/assets/models/
+# Embedded framework key material - never commit
+native/src/valkey.h
+**/FrameworkKey.kt
+valhalla-key.bin
+*.bin
+*.enc
+models/.cache/
+.cache/

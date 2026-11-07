@@ -29,6 +29,20 @@ $editions = @{
     }
 }
 
+$encryptTool = Join-Path $root 'tools\encrypt_payload.py'
+if (-not (Test-Path $encryptTool)) { throw "missing encrypt tool: $encryptTool" }
+
+# Encrypt one payload file in place (VALENC1) and remove the plaintext.
+function Protect-PayloadFile($path) {
+    if (-not (Test-Path $path)) { return }
+    $enc = "$path.enc"
+    if (Test-Path $enc) { Remove-Item $enc -Force }
+    & python $encryptTool enc $path $enc
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $enc)) { throw "encrypt failed: $path" }
+    Remove-Item $path -Force
+    Write-Host "encrypted -> $enc"
+}
+
 function Build-One($key) {
     $e = $editions[$key]
     if (-not (Test-Path (Join-Path $e.SrcDist $e.Exe))) { throw "missing dist exe: $($e.SrcDist)\$($e.Exe)" }
@@ -57,6 +71,11 @@ function Build-One($key) {
         if (-not (Test-Path $dest)) { Copy-Item (Join-Path $cudaSrc $dll) $dest }
     }
     Copy-Item "$modelSrc\*" "$pkg\payload\models\Qwen2.5-0.5B-Instruct\"
+    # Framework payload ships encrypted only; the app exes (UI shells) stay plain.
+    Protect-PayloadFile "$pkg\payload\app\valhalla_base.exe"
+    foreach ($name in 'model.safetensors','model.safetensors.index.json','tokenizer.json','vocab.json','merges.txt','tokenizer_config.json','config.json','generation_config.json') {
+        Protect-PayloadFile "$pkg\payload\models\Qwen2.5-0.5B-Instruct\$name"
+    }
 
     @(
         "$($e.Label) A测版安装包"

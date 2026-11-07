@@ -1,13 +1,17 @@
 #include "engine.h"
 
 #include "utf.h"
+#include "valkey.h"
 
 #include <nlohmann/json.hpp>
 
 #include <windows.h>
 #include <winhttp.h>
+#include <bcrypt.h>
 
 #include <algorithm>
+#include <cstdint>
+#include <cstdlib>
 #include <cwctype>
 #include <mutex>
 #include <string>
@@ -567,6 +571,346 @@ void ensure_parent(const std::wstring& file) {
     CreateDirectoryW(dir.c_str(), nullptr);
 }
 
+// ---- VALENC1 decryption (AES-256-GCM via Windows BCrypt) ----
+bool file_exists_w(const std::wstring& path) {
+    return !path.empty() && GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES;
+}
+
+std::wstring dir_of_w(const std::wstring& path) {
+    auto slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring() : path.substr(0, slash);
+}
+
+std::wstring leaf_of_w(const std::wstring& path) {
+    auto slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? path : path.substr(slash + 1);
+}
+
+bool read_exact(HANDLE file, void* buffer, DWORD size) {
+    BYTE* out = static_cast<BYTE*>(buffer);
+    DWORD done = 0;
+    while (done < size) {
+        DWORD got = 0;
+        if (!ReadFile(file, out + done, size - done, &got, nullptr) || got == 0) return false;
+        done += got;
+    }
+    return true;
+}
+
+bool write_exact(HANDLE file, const void* buffer, DWORD size) {
+    const BYTE* in = static_cast<const BYTE*>(buffer);
+    DWORD done = 0;
+    while (done < size) {
+        DWORD wrote = 0;
+        if (!WriteFile(file, in + done, size - done, &wrote, nullptr) || wrote == 0) return false;
+        done += wrote;
+    }
+    return true;
+}
+
+uint32_t load_le32(const BYTE* p) {
+    return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
+           (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
+}
+
+// Decrypts a VALENC1 file to dst (streaming, one 1MiB chunk at a time).
+// On failure returns false, sets a Chinese error, and removes dst.
+bool decrypt_valenc1(const std::wstring& src, const std::wstring& dst, std::wstring& error) {
+    static constexpr BYTE kMagic[8] = {'V', 'A', 'L', 'E', 'N', 'C', '1', '\0'};
+    auto fail = [&](const std::wstring& why) {
+        error = why;
+        DeleteFileW(dst.c_str());
+        return false;
+    };
+    HANDLE in = CreateFileW(src.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (in == INVALID_HANDLE_VALUE) {
+        error = L"无法打开加密文件。";
+        return false;
+    }
+    BYTE header[12];
+    if (!read_exact(in, header, sizeof(header)) || memcmp(header, kMagic, 8) != 0) {
+        CloseHandle(in);
+        error = L"不是 VALENC1 加密文件，文件头校验失败。";
+        return false;
+    }
+    uint32_t chunk_size = load_le32(header + 8);
+    if (chunk_size == 0 || chunk_size > (16u << 20)) {
+        CloseHandle(in);
+        error = L"VALENC1 分块大小异常。";
+        return false;
+    }
+    BCRYPT_ALG_HANDLE alg = nullptr;
+    BCRYPT_KEY_HANDLE key = nullptr;
+    NTSTATUS status = BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, nullptr, 0);
+    if (status >= 0) {
+        status = BCryptSetProperty(alg, BCRYPT_CHAINING_MODE, reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(BCRYPT_CHAIN_MODE_GCM)),
+                                   static_cast<ULONG>(sizeof(BCRYPT_CHAIN_MODE_GCM)), 0);
+    }
+    if (status >= 0) {
+        auto key_bytes = valkey::key();
+        status = BCryptGenerateSymmetricKey(alg, &key, nullptr, 0, key_bytes.data(),
+                                            static_cast<ULONG>(key_bytes.size()), 0);
+    }
+    if (status < 0) {
+        if (alg) BCryptCloseAlgorithmProvider(alg, 0);
+        CloseHandle(in);
+        error = L"无法初始化 AES-256-GCM 解密（BCrypt）。";
+        return false;
+    }
+    HANDLE out = CreateFileW(dst.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (out == INVALID_HANDLE_VALUE) {
+        BCryptDestroyKey(key);
+        BCryptCloseAlgorithmProvider(alg, 0);
+        CloseHandle(in);
+        error = L"无法写入解密后的文件（目录不可写？）。";
+        return false;
+    }
+    bool ok = true;
+    std::wstring why;
+    std::vector<BYTE> cipher;
+    std::vector<BYTE> plain;
+    for (;;) {
+        BYTE len_buf[4];
+        DWORD got = 0;
+        if (!ReadFile(in, len_buf, 4, &got, nullptr)) { ok = false; why = L"读取加密文件失败。"; break; }
+        if (got == 0) break;
+        if (got != 4) { ok = false; why = L"加密文件不完整（分块长度）。"; break; }
+        uint32_t clen = load_le32(len_buf);
+        if (clen <= 16 || clen - 16 > chunk_size) { ok = false; why = L"加密文件分块长度异常。"; break; }
+        BYTE nonce[12];
+        if (!read_exact(in, nonce, sizeof(nonce))) { ok = false; why = L"加密文件不完整（nonce）。"; break; }
+        cipher.resize(clen);
+        if (!read_exact(in, cipher.data(), clen)) { ok = false; why = L"加密文件不完整（密文）。"; break; }
+        uint32_t plain_len = clen - 16;
+        plain.resize(plain_len == 0 ? 1 : plain_len);
+        BCRYPT_AUTHENTICATED_CIPHER_MODE_INFO info;
+        BCRYPT_INIT_AUTH_MODE_INFO(info);
+        info.pbNonce = nonce;
+        info.cbNonce = sizeof(nonce);
+        info.pbAuthData = const_cast<BYTE*>(kMagic);
+        info.cbAuthData = sizeof(kMagic);
+        info.pbTag = cipher.data() + plain_len;
+        info.cbTag = 16;
+        ULONG produced = 0;
+        status = BCryptDecrypt(key, cipher.data(), plain_len, &info, nullptr, 0,
+                               plain_len ? plain.data() : nullptr, plain_len, &produced, 0);
+        if (status < 0) { ok = false; why = L"解密校验失败（密钥不匹配或文件损坏）。"; break; }
+        if (produced != plain_len || (plain_len && !write_exact(out, plain.data(), produced))) {
+            ok = false; why = L"写入解密文件失败。"; break;
+        }
+    }
+    CloseHandle(out);
+    BCryptDestroyKey(key);
+    BCryptCloseAlgorithmProvider(alg, 0);
+    CloseHandle(in);
+    if (!ok) return fail(why);
+    return true;
+}
+
+std::wstring g_temp_binary;
+std::wstring g_last_binary_error;
+bool g_atexit_registered = false;
+void (*g_exit_cleanup_hook)() = nullptr;  // Set to stop_warm_locked once a warm process runs.
+
+void cleanup_temp_binary_at_exit() {
+    if (g_exit_cleanup_hook) g_exit_cleanup_hook();
+    for (int i = 0; i < 30 && !g_temp_binary.empty(); ++i) {
+        if (DeleteFileW(g_temp_binary.c_str()) || !file_exists_w(g_temp_binary)) {
+            g_temp_binary.clear();
+            break;
+        }
+        Sleep(100);
+    }
+}
+
+void try_delete_temp_binary() {
+    if (g_temp_binary.empty()) return;
+    for (int i = 0; i < 20; ++i) {
+        if (DeleteFileW(g_temp_binary.c_str()) || !file_exists_w(g_temp_binary)) {
+            g_temp_binary.clear();
+            return;
+        }
+        Sleep(50);
+    }
+    // If deletion still fails the file is in use; keep the path so it is reused / retried at exit.
+}
+
+void cleanup_orphan_temp_exes(const std::wstring& dir) {
+    if (dir.empty()) return;
+    WIN32_FIND_DATAW data{};
+    HANDLE search = FindFirstFileW((dir + L"\\valhalla_base_*.exe").c_str(), &data);
+    if (search == INVALID_HANDLE_VALUE) return;
+    do {
+        if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        std::wstring full = dir + L"\\" + data.cFileName;
+        if (!g_temp_binary.empty() && _wcsicmp(full.c_str(), g_temp_binary.c_str()) == 0) continue;
+        DeleteFileW(full.c_str());  // Running exes refuse deletion; those are skipped silently.
+    } while (FindNextFileW(search, &data));
+    FindClose(search);
+}
+
+// Decrypts an .enc engine binary next to it into a random temp exe in the same
+// directory (CUDA DLLs and the child working directory live there).
+std::wstring materialize_enc_binary(const std::wstring& enc_path) {
+    std::wstring dir = dir_of_w(enc_path);
+    if (!g_temp_binary.empty() && file_exists_w(g_temp_binary) &&
+        _wcsicmp(dir_of_w(g_temp_binary).c_str(), dir.c_str()) == 0) {
+        return g_temp_binary;
+    }
+    cleanup_orphan_temp_exes(dir);
+    BYTE random_bytes[8] = {};
+    BCryptGenRandom(nullptr, random_bytes, sizeof(random_bytes), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+    uint32_t r0 = load_le32(random_bytes);
+    uint32_t r1 = load_le32(random_bytes + 4);
+    wchar_t name[96];
+    swprintf_s(name, L"valhalla_base_%lu_%08X%08X.exe", GetCurrentProcessId(), r0, r1);
+    std::wstring temp = dir + L"\\" + name;
+    std::wstring error;
+    if (!decrypt_valenc1(enc_path, temp, error)) {
+        g_last_binary_error = L"引擎解密失败：" + error;
+        DeleteFileW(temp.c_str());
+        return L"";
+    }
+    g_temp_binary = temp;
+    if (!g_atexit_registered) {
+        std::atexit(cleanup_temp_binary_at_exit);
+        g_atexit_registered = true;
+    }
+    return temp;
+}
+
+std::wstring resolve_binary() {
+    wchar_t buffer[32768];
+    DWORD count = GetEnvironmentVariableW(L"VALHALLA_BASE_EXE", buffer, 32768);
+    if (count > 0 && count < 32768 && file_exists_w(buffer)) return buffer;
+    // Installed layout: engine next to this app's exe.
+    wchar_t module_path[32768];
+    DWORD module_len = GetModuleFileNameW(nullptr, module_path, 32768);
+    if (module_len > 0 && module_len < 32768) {
+        std::wstring dir = dir_of_w(module_path);
+        cleanup_orphan_temp_exes(dir);
+        std::wstring plain = dir + L"\\valhalla_base.exe";
+        if (file_exists_w(plain)) return plain;
+        std::wstring enc = plain + L".enc";
+        if (file_exists_w(enc)) return materialize_enc_binary(enc);
+    }
+    if (file_exists_w(kDefaultBinary)) return kDefaultBinary;
+    std::wstring dev_enc = std::wstring(kDefaultBinary) + L".enc";
+    if (file_exists_w(dev_enc)) return materialize_enc_binary(dev_enc);
+    return L"";
+}
+
+bool file_size_mtime(const std::wstring& path, ULONGLONG& size, ULONGLONG& mtime) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &data)) return false;
+    size = (static_cast<ULONGLONG>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+    mtime = (static_cast<ULONGLONG>(data.ftLastWriteTime.dwHighDateTime) << 32) | data.ftLastWriteTime.dwLowDateTime;
+    return true;
+}
+
+// If source holds *.enc files, decrypt them into <parent>\.cache\<leaf> and
+// return that directory; otherwise return source unchanged.
+bool resolve_model_dir(const std::wstring& source, std::wstring& resolved, std::wstring& error) {
+    resolved = source;
+    struct EncItem { std::wstring enc; std::wstring plain_name; ULONGLONG enc_size = 0; ULONGLONG mtime = 0; };
+    std::vector<EncItem> items;
+    WIN32_FIND_DATAW data{};
+    HANDLE search = FindFirstFileW((source + L"\\*.enc").c_str(), &data);
+    if (search != INVALID_HANDLE_VALUE) {
+        do {
+            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            std::wstring name = data.cFileName;
+            if (name.size() <= 4) continue;
+            EncItem item;
+            item.enc = source + L"\\" + name;
+            item.plain_name = name.substr(0, name.size() - 4);
+            file_size_mtime(item.enc, item.enc_size, item.mtime);
+            items.push_back(item);
+        } while (FindNextFileW(search, &data));
+        FindClose(search);
+    }
+    if (items.empty()) return true;
+    std::wstring parent = dir_of_w(source);
+    std::wstring cache_root = parent + L"\\.cache";
+    std::wstring cache = cache_root + L"\\" + leaf_of_w(source);
+    CreateDirectoryW(cache_root.c_str(), nullptr);
+    CreateDirectoryW(cache.c_str(), nullptr);
+    // Cache hit: .done records name|enc_size|mtime|plain_size for every source .enc.
+    std::wstring done_path = cache + L"\\.done";
+    std::string done_text;
+    {
+        HANDLE f = CreateFileW(done_path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (f != INVALID_HANDLE_VALUE) {
+            DWORD sz = GetFileSize(f, nullptr);
+            if (sz != INVALID_FILE_SIZE && sz < (1 << 20)) {
+                done_text.resize(sz);
+                DWORD got = 0;
+                ReadFile(f, done_text.data(), sz, &got, nullptr);
+                done_text.resize(got);
+            }
+            CloseHandle(f);
+        }
+    }
+    bool hit = !done_text.empty();
+    if (hit) {
+        size_t lines = 0;
+        for (const auto& item : items) {
+            ULONGLONG sz = 0, mt = 0;
+            if (!file_size_mtime(cache + L"\\" + item.plain_name, sz, mt)) { hit = false; break; }
+            std::string want = wide_to_utf8(item.plain_name) + "|" + std::to_string(item.enc_size) + "|" +
+                               std::to_string(item.mtime) + "|" + std::to_string(sz);
+            if (done_text.find(want) == std::string::npos) { hit = false; break; }
+            ++lines;
+        }
+        (void)lines;
+    }
+    if (hit) {
+        resolved = cache;
+        return true;
+    }
+    for (const auto& item : items) {
+        std::wstring target = cache + L"\\" + item.plain_name;
+        std::wstring tmp = target + L".tmp";
+        std::wstring dec_error;
+        if (!decrypt_valenc1(item.enc, tmp, dec_error)) {
+            DeleteFileW(tmp.c_str());
+            error = L"模型解密失败：无法解密 " + item.plain_name + L".enc：" + dec_error;
+            return false;
+        }
+        if (!MoveFileExW(tmp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            DeleteFileW(tmp.c_str());
+            error = L"模型解密失败：无法写入缓存文件 " + item.plain_name + L"。";
+            return false;
+        }
+    }
+    // Copy any plaintext companions (mixed directories) into the cache too.
+    HANDLE plain_search = FindFirstFileW((source + L"\\*").c_str(), &data);
+    if (plain_search != INVALID_HANDLE_VALUE) {
+        do {
+            if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+            std::wstring name = data.cFileName;
+            if (name.size() > 4 && _wcsicmp(name.c_str() + name.size() - 4, L".enc") == 0) continue;
+            CopyFileW((source + L"\\" + name).c_str(), (cache + L"\\" + name).c_str(), FALSE);
+        } while (FindNextFileW(plain_search, &data));
+        FindClose(plain_search);
+    }
+    std::string done_out;
+    for (const auto& item : items) {
+        ULONGLONG sz = 0, mt = 0;
+        file_size_mtime(cache + L"\\" + item.plain_name, sz, mt);
+        done_out += wide_to_utf8(item.plain_name) + "|" + std::to_string(item.enc_size) + "|" +
+                    std::to_string(item.mtime) + "|" + std::to_string(sz) + "\n";
+    }
+    HANDLE f = CreateFileW(done_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (f != INVALID_HANDLE_VALUE) {
+        DWORD wrote = 0;
+        WriteFile(f, done_out.data(), static_cast<DWORD>(done_out.size()), &wrote, nullptr);
+        CloseHandle(f);
+    }
+    resolved = cache;
+    return true;
+}
+
 }  // namespace
 
 void save_settings(const std::wstring& path, const Settings& settings);
@@ -673,11 +1017,7 @@ void save_transcript(const std::wstring& path, const Transcript& transcript) {
 }
 
 std::wstring find_binary() {
-    wchar_t buffer[32768];
-    DWORD count = GetEnvironmentVariableW(L"VALHALLA_BASE_EXE", buffer, 32768);
-    if (count > 0 && count < 32768 && GetFileAttributesW(buffer) != INVALID_FILE_ATTRIBUTES) return buffer;
-    if (GetFileAttributesW(kDefaultBinary) != INVALID_FILE_ATTRIBUTES) return kDefaultBinary;
-    return L"";
+    return resolve_binary();
 }
 
 std::wstring models_root() {
@@ -701,7 +1041,9 @@ bool weights_present(const std::wstring& directory) {
     auto weights = directory + L"\\model.safetensors";
     auto index = directory + L"\\model.safetensors.index.json";
     return GetFileAttributesW(weights.c_str()) != INVALID_FILE_ATTRIBUTES ||
-           GetFileAttributesW(index.c_str()) != INVALID_FILE_ATTRIBUTES;
+           GetFileAttributesW(index.c_str()) != INVALID_FILE_ATTRIBUTES ||
+           GetFileAttributesW((weights + L".enc").c_str()) != INVALID_FILE_ATTRIBUTES ||
+           GetFileAttributesW((index + L".enc").c_str()) != INVALID_FILE_ATTRIBUTES;
 }
 
 struct WarmProcess {
@@ -729,6 +1071,7 @@ void close_warm_handles() {
 void stop_warm_locked() {
     if (g_warm.process.hProcess) TerminateProcess(g_warm.process.hProcess, 0);
     close_warm_handles();
+    try_delete_temp_binary();
 }
 
 bool warm_alive() {
@@ -737,9 +1080,9 @@ bool warm_alive() {
 
 bool start_warm(const std::wstring& model, std::string& error) {
     stop_warm_locked();
-    std::wstring binary = find_binary();
+    std::wstring binary = resolve_binary();
     if (binary.empty()) {
-        error = "找不到 valhalla_base.exe。";
+        error = g_last_binary_error.empty() ? "找不到 valhalla_base.exe 或 valhalla_base.exe.enc。" : wide_to_utf8(g_last_binary_error);
         return false;
     }
     ChildPipes pipes;
@@ -779,6 +1122,7 @@ bool start_warm(const std::wstring& model, std::string& error) {
     CloseHandle(pipes.err_write);
     pipes.err_write = nullptr;
     g_warm.process = process;
+    g_exit_cleanup_hook = &stop_warm_locked;
     g_warm.in_write = pipes.in_write;
     g_warm.out_read = pipes.out_read;
     g_warm.err_read = pipes.err_read;
@@ -889,8 +1233,11 @@ bool ensure_framework_locked(const std::wstring& model, std::string& error) {
 std::wstring ensure_framework(const std::wstring& model_dir) {
     std::lock_guard<std::mutex> lock(g_warm_mu);
     if (!weights_present(model_dir)) return L"模型权重不在。";
+    std::wstring resolved;
+    std::wstring dec_error;
+    if (!resolve_model_dir(model_dir, resolved, dec_error)) return dec_error;
     std::string error;
-    if (!ensure_framework_locked(model_dir, error)) return utf8_to_wide(error);
+    if (!ensure_framework_locked(resolved, error)) return utf8_to_wide(error);
     return L"";
 }
 
@@ -929,7 +1276,7 @@ std::wstring format_cuda(bool zh) {
 
 FeatureReport run_feature_probe(bool zh) {
     FeatureReport report;
-    std::wstring binary = find_binary();
+    std::wstring binary = resolve_binary();
     auto add = [&](const std::wstring& line) {
         if (!report.text.empty()) report.text += L"\n";
         report.text += line;
@@ -1076,6 +1423,7 @@ FeatureReport run_feature_probe(bool zh) {
     if (WaitForSingleObject(process.hProcess, 2000) == WAIT_TIMEOUT) TerminateProcess(process.hProcess, 0);
     CloseHandle(process.hThread);
     CloseHandle(process.hProcess);
+    try_delete_temp_binary();
     report.ok = native_ok && fate_ok && memory_ok && single_load;
     add(report.ok ? (zh ? L"Valhalla 特性运行正常。" : L"Valhalla features are running.") : (zh ? L"Valhalla 特性检查未通过。" : L"Valhalla feature check did not pass."));
     return report;
@@ -1099,9 +1447,15 @@ TurnResult run_chat(
         result.error = wide_to_utf8(model_dir);
         return result;
     }
-    std::wstring binary = find_binary();
+    std::wstring resolved_model;
+    std::wstring dec_error;
+    if (!resolve_model_dir(model_dir, resolved_model, dec_error)) {
+        result.error = wide_to_utf8(dec_error);
+        return result;
+    }
+    std::wstring binary = resolve_binary();
     if (binary.empty()) {
-        result.error = "找不到 valhalla_base.exe。";
+        result.error = g_last_binary_error.empty() ? "找不到 valhalla_base.exe 或 valhalla_base.exe.enc。" : wide_to_utf8(g_last_binary_error);
         return result;
     }
 
@@ -1125,7 +1479,7 @@ TurnResult run_chat(
 
     nlohmann::json retrieval_config = {
         {"decode", "hybrid"},
-        {"lm_model", wide_to_utf8(model_dir)},
+        {"lm_model", wide_to_utf8(resolved_model)},
         {"mcq_decode", "lm_patch"},
         {"follow_up_decode", "native_follow_up_aware"},
         {"fate_ingress_routing", "quad_cycle"},
@@ -1146,7 +1500,7 @@ TurnResult run_chat(
 
     std::lock_guard<std::mutex> lock(g_warm_mu);
     std::string start_error;
-    if (!ensure_framework_locked(model_dir, start_error)) {
+    if (!ensure_framework_locked(resolved_model, start_error)) {
         result.error = start_error;
         return result;
     }
@@ -1179,7 +1533,7 @@ TurnResult run_chat(
     }
     nlohmann::json spoken_config = {
         {"decode", "lm_patch"},
-        {"lm_model", wide_to_utf8(model_dir)},
+        {"lm_model", wide_to_utf8(resolved_model)},
         {"mcq_decode", "lm_patch"},
         {"follow_up_decode", "lm_patch_on_follow_up"},
         {"fate_ingress_routing", "quad_cycle"},

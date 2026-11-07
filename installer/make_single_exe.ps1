@@ -15,6 +15,16 @@ function Build-One($key) {
     $e = $editions[$key]
     $pkg = Join-Path $root "release\$($e.Pkg)"
     if (-not (Test-Path (Join-Path $pkg $e.Setup))) { throw "missing package: $pkg" }
+    # Refuse to pack a plaintext framework payload: assemble_packages.ps1 must
+    # have encrypted the engine exe and the model files already.
+    $payloadApp = Join-Path $pkg 'payload\app'
+    if (Test-Path (Join-Path $payloadApp 'valhalla_base.exe')) { throw "plaintext valhalla_base.exe in package; run assemble_packages.ps1 first: $pkg" }
+    if (-not (Test-Path (Join-Path $payloadApp 'valhalla_base.exe.enc'))) { throw "missing valhalla_base.exe.enc in package: $pkg" }
+    $payloadModel = Join-Path $pkg 'payload\models\Qwen2.5-0.5B-Instruct'
+    foreach ($name in 'model.safetensors','tokenizer.json','vocab.json','tokenizer_config.json','config.json','generation_config.json') {
+        if (Test-Path (Join-Path $payloadModel $name)) { throw "plaintext model file $name in package; run assemble_packages.ps1 first: $pkg" }
+    }
+    if (-not (Test-Path (Join-Path $payloadModel 'model.safetensors.enc'))) { throw "missing model.safetensors.enc in package: $pkg" }
     $work = Join-Path $root "release\_sfx_$key"
     if (Test-Path $work) { Remove-Item $work -Recurse -Force }
     New-Item -ItemType Directory -Force $work | Out-Null

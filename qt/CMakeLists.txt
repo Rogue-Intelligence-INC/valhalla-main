@@ -55,7 +55,7 @@ target_link_libraries(Valhalla PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
     user32 gdi32 advapi32 kernel32 dwmapi gdiplus comctl32 winhttp uxtheme shlwapi
-    ole32 oleaut32 shell32 comdlg32 uuid UIAutomationCore windowsapp
+    ole32 oleaut32 shell32 comdlg32 uuid UIAutomationCore windowsapp bcrypt
 )
 
 # Release hardening: no debug info in shipped binaries, ASLR/NX/CFG on.
