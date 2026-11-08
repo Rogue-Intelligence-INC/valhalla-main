@@ -16,6 +16,7 @@
 #include <QGuiApplication>
 #include <QStyleHints>
 #include <QClipboard>
+#include <QTime>
 #ifdef Q_OS_WIN
 #include <dwmapi.h>
 #endif
@@ -290,6 +291,8 @@ void Bridge::refreshMessages() {
         row["path"] = line.path;
         row["badge"] = badgeFor(line.path, lang_ == "zh");
         row["error"] = line.error;
+        row["time"] = line.time;
+        row["tools"] = line.tools;
         messages_.push_back(row);
     }
     emit messagesChanged();
@@ -496,6 +499,12 @@ void Bridge::askSelection(const QString& action, const QString& raw) {
     display_override_.clear();
 }
 
+// Small local models can fall into a token loop ("8888…", "Qt Qt Qt…"); keep one copy of the unit.
+static QString collapseLoops(QString text) {
+    static const QRegularExpression loop(QStringLiteral("(.{1,12}?)\\1{5,}"), QRegularExpression::DotMatchesEverythingOption);
+    return text.replace(loop, QStringLiteral("\\1")).trimmed();
+}
+
 void Bridge::send(const QString& raw) {
     if (busy_) return;
     const QString question = raw.trimmed();
@@ -515,18 +524,26 @@ void Bridge::send(const QString& raw) {
         refreshMessages();
         return;
     }
-    lines_.push_back(Line{true, display_override_.isEmpty() ? question : display_override_, {}});
+    Line asked_line{true, display_override_.isEmpty() ? question : display_override_, {}};
+    asked_line.time = QTime::currentTime().toString(QStringLiteral("HH:mm"));
+    lines_.push_back(asked_line);
     refreshMessages();
     setBusy(true);
     setStatus({});
+    turn_tools_.clear();
+    if (!web_context_.isEmpty()) turn_tools_ << QStringLiteral("web:%1").arg(web_sources_.size());
+    if (!screen_context_.empty()) turn_tools_ << QStringLiteral("screen");
+    if (!attach_names_.isEmpty()) turn_tools_ << QStringLiteral("file:%1").arg(attach_names_.join(QStringLiteral(", ")));
+    if (task_mode_) turn_tools_ << QStringLiteral("task");
 
-    const std::string knowledge = compose_corpus(kb_, settings_.knowledge, question.toStdString());
+    std::string knowledge = compose_corpus(kb_, settings_.knowledge, question.toStdString());
+    for (const QString& extra : {web_context_, attach_context_})
+        if (!extra.isEmpty()) knowledge += "\n" + extra.toStdString();
     const std::string mode = "open"; // Fixed Valhalla mode: engine decode is hybrid; no UI strategy switch.
     last_question_ = question;
     const std::string session = settings_.keep_session ? session_json_ : std::string();
     const auto history = history_;
-    const std::string screen = web_context_.isEmpty() ? screen_context_
-        : (web_context_.toStdString() + (screen_context_.empty() ? std::string() : "\n\n" + screen_context_));
+    const std::string screen = screen_context_;
     const bool allow_control = settings_.allow_control;
     QString asked = question;
     if (task_mode_) asked = L("这是一项要完成的任务。直接做完，并给出结果。\n", "This is a task to finish. Do it and report the result.\n") + question;
@@ -537,7 +554,8 @@ void Bridge::send(const QString& raw) {
         QMetaObject::invokeMethod(this, [this, result, question, started]() {
             setBusy(false);
             if (!result.error.empty()) {
-                Line errLine; errLine.user=false; errLine.error=true; errLine.text=QString::fromStdString(result.error); lines_.push_back(errLine);
+                Line errLine; errLine.user=false; errLine.error=true; errLine.text=QString::fromStdString(result.error);
+                errLine.time = QTime::currentTime().toString(QStringLiteral("HH:mm")); lines_.push_back(errLine);
             } else {
                 if (settings_.keep_session) session_json_ = result.session_json;
                 else session_json_.clear();
@@ -558,12 +576,28 @@ void Bridge::send(const QString& raw) {
                     }
                 }
                 if (visible.empty()) visible = utf8_to_wide(result.answer);
+                const QString raw_text = QString::fromStdWString(visible);
+                QString shown = collapseLoops(raw_text);
+                const bool degenerate = raw_text.size() > 40 && shown.size() * 3 < raw_text.size();
+                if (degenerate && !web_sources_.isEmpty()) {
+                    QStringList quoted;
+                    for (int i = 0; i < web_sources_.size() && i < 2; ++i)
+                        quoted << QStringLiteral("[%1] ").arg(i + 1) + web_sources_[i].toMap()["snippet"].toString();
+                    shown = L("本地模型这次输出不稳定，以下直接摘自联网来源：\n", "The local model output was unstable; quoting the web sources directly:\n") +
+                            quoted.join(QStringLiteral("\n"));
+                }
+                visible = shown.toStdWString();
                 last_path_ = QString::fromStdString(result.decode_path);
                 last_seconds_ = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
                 if (!result.decode_path.empty()) {
                     history_.emplace_back(question.toStdString(), wide_to_utf8(visible));
                 }
-                lines_.push_back(Line{false, QString::fromStdWString(visible), last_path_});
+                Line answer{false, QString::fromStdWString(visible), last_path_};
+                answer.time = QTime::currentTime().toString(QStringLiteral("HH:mm"));
+                answer.tools = turn_tools_;
+                if (!script.empty()) answer.tools << (settings_.allow_control ? QStringLiteral("control") : QStringLiteral("control-blocked"));
+                answer.tools << QStringLiteral("elapsed:%1").arg(last_seconds_, 0, 'f', 1);
+                lines_.push_back(answer);
                 emit turnChanged();
             }
             refreshMessages();
@@ -582,6 +616,8 @@ void Bridge::newChat() {
     screen_context_.clear();
     web_context_.clear();
     web_sources_.clear();
+    attach_context_.clear();
+    attach_names_.clear();
     loadActive();
     storeTranscript();
     setStatus(framework_note_);
@@ -792,6 +828,35 @@ QVariantList parseBing(const QString& html) {
     }
     return out;
 }
+
+QVariantList parseSo(const QString& html) {
+    QVariantList out;
+    static const QRegularExpression title(QStringLiteral("<h3[^>]*class=\"res-title[^>]*>\\s*<a([^>]*)>(.*?)</a>"),
+                                          QRegularExpression::DotMatchesEverythingOption);
+    static const QRegularExpression realUrl(QStringLiteral("data-mdurl=\"([^\"]+)\""));
+    static const QRegularExpression href(QStringLiteral("href=\"([^\"]+)\""));
+    static const QRegularExpression summary(QStringLiteral("data-result-summary>(.*?)</span>"), QRegularExpression::DotMatchesEverythingOption);
+    static const QRegularExpression desc(QStringLiteral("<p class=\"res-desc\">(.*?)</p>"), QRegularExpression::DotMatchesEverythingOption);
+    static const QRegularExpression styles(QStringLiteral("<(style|script)[^>]*>.*?</\\1>"), QRegularExpression::DotMatchesEverythingOption);
+    const QStringList blocks = html.split(QStringLiteral("<li class=\"res-list"));
+    for (int i = 1; i < blocks.size() && out.size() < 5; ++i) {
+        QString b = blocks[i];
+        b.remove(styles);
+        const auto t = title.match(b);
+        if (!t.hasMatch()) continue;
+        auto u = realUrl.match(t.captured(1));
+        if (!u.hasMatch()) u = href.match(t.captured(1));
+        auto s = summary.match(b);
+        if (!s.hasMatch()) s = desc.match(b);
+        QString text = s.hasMatch() ? htmlToText(s.captured(1)) : htmlToText(b.mid(t.capturedEnd()));
+        QVariantMap row;
+        row["title"] = htmlToText(t.captured(2));
+        row["url"] = u.hasMatch() ? htmlToText(u.captured(1)) : QString();
+        row["snippet"] = text.left(240);
+        if (!row["title"].toString().isEmpty()) out.push_back(row);
+    }
+    return out;
+}
 }
 
 void Bridge::webSearch(const QString& raw, bool thenAsk) {
@@ -800,27 +865,44 @@ void Bridge::webSearch(const QString& raw, bool thenAsk) {
     web_busy_ = true;
     emit busyChanged();
     setStatus(L("正在联网查找…", "Searching the web…"));
-    QUrl url(QStringLiteral("https://cn.bing.com/search"));
-    url.setQuery(QStringLiteral("q=") + QString::fromLatin1(QUrl::toPercentEncoding(query)) +
-                 (lang_ == "zh" ? QStringLiteral("&setlang=zh-Hans") : QStringLiteral("&setlang=en")));
+    fetchWeb(query, thenAsk, 0);
+}
+
+void Bridge::fetchWeb(const QString& query, bool thenAsk, int engine) {
+    const QString q = QString::fromLatin1(QUrl::toPercentEncoding(query));
+    // Bing serves unrelated pages to clients without a browser session, so it is only a fallback.
+    QUrl url = engine == 0 ? QUrl(QStringLiteral("https://www.so.com/s?q=") + q)
+                           : QUrl(QStringLiteral("https://cn.bing.com/search?q=") + q + QStringLiteral("&form=QBLH"));
     QNetworkRequest req(url);
     req.setHeader(QNetworkRequest::UserAgentHeader,
                   QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"));
+    req.setRawHeader("Accept-Language", lang_ == "zh" ? "zh-CN,zh;q=0.9" : "en-US,en;q=0.9");
     req.setTransferTimeout(12000);
     auto* nam = new QNetworkAccessManager(this);
     QNetworkReply* reply = nam->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, nam, query, thenAsk]() {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, nam, query, thenAsk, engine]() {
         reply->deleteLater(); nam->deleteLater();
+        const bool ok = reply->error() == QNetworkReply::NoError;
+        const QString html = ok ? QString::fromUtf8(reply->readAll()) : QString();
+        web_sources_ = engine == 0 ? parseSo(html) : parseBing(html);
+        if (web_sources_.isEmpty() && engine == 0) {
+            fetchWeb(query, thenAsk, 1);
+            return;
+        }
         web_busy_ = false;
         emit busyChanged();
-        const bool ok = reply->error() == QNetworkReply::NoError;
-        web_sources_ = ok ? parseBing(QString::fromUtf8(reply->readAll())) : QVariantList{};
         QString block;
+        QStringList facts;
         for (int i = 0; i < web_sources_.size(); ++i) {
             const QVariantMap r = web_sources_[i].toMap();
             block += QStringLiteral("[%1] %2\n%3\n%4\n").arg(i + 1).arg(r["title"].toString(), r["snippet"].toString(), r["url"].toString());
+            if (facts.size() >= 3) continue;
+            QString snippet = r["snippet"].toString();
+            snippet.remove(QRegularExpression(QStringLiteral("^[^·]{0,24}·\\s*")));
+            snippet = collapseLoops(snippet).left(140);
+            if (!snippet.isEmpty() && !facts.contains(snippet)) facts << snippet;
         }
-        web_context_ = block.isEmpty() ? QString() : (L("联网查找结果（", "Web results (") + query + QStringLiteral(")：\n") + block);
+        web_context_ = facts.join(QStringLiteral("\n"));
         emit screenChanged();
         const QString note = web_sources_.isEmpty()
             ? (ok ? L("联网查找没有找到结果。", "Web search returned no results.")
@@ -829,7 +911,9 @@ void Bridge::webSearch(const QString& raw, bool thenAsk) {
         setStatus(note);
         if (thenAsk) send(query);
         if (!web_sources_.isEmpty()) {
-            lines_.push_back(Line{false, block.trimmed(), QStringLiteral("web")});
+            Line sources{false, block.trimmed(), QStringLiteral("web")};
+            sources.time = QTime::currentTime().toString(QStringLiteral("HH:mm"));
+            lines_.push_back(sources);
             refreshMessages();
         }
     });
@@ -858,7 +942,29 @@ void Bridge::clearContext() {
     ocr_import_text_.clear();
     web_context_.clear();
     web_sources_.clear();
+    attach_context_.clear();
+    attach_names_.clear();
     setStatus(L("已清空本轮上下文", "Context cleared"));
+    emit screenChanged();
+}
+
+void Bridge::attachFiles(const QVariantList& urls) {
+    static const QStringList textual = {"txt", "md", "markdown", "csv", "tsv", "json", "jsonl", "xml", "yaml", "yml", "ini", "toml", "log",
+                                        "html", "htm", "py", "js", "ts", "c", "h", "cpp", "hpp", "cs", "java", "kt", "go", "rs", "sql", "sh", "ps1", "bat"};
+    QStringList skipped;
+    for (const QVariant& value : urls) {
+        const QString path = QUrl(value.toString()).toLocalFile();
+        const QFileInfo info(path);
+        if (path.isEmpty() || !info.isFile()) continue;
+        if (!textual.contains(info.suffix().toLower())) { skipped << info.fileName(); continue; }
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) { skipped << info.fileName(); continue; }
+        const QString body = QString::fromUtf8(f.read(120 * 1024));
+        attach_context_ += L("文件 ", "File ") + info.fileName() + QStringLiteral(":\n") + body + QStringLiteral("\n\n");
+        attach_names_ << info.fileName();
+    }
+    setStatus(skipped.isEmpty() ? L("已附加 %1 个文件到上下文", "%1 file(s) attached to context").arg(attach_names_.size())
+                                : L("已附加 %1 个；不支持的格式：", "%1 attached; unsupported: ").arg(attach_names_.size()) + skipped.join(QStringLiteral(", ")));
     emit screenChanged();
 }
 

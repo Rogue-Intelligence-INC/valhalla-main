@@ -67,6 +67,7 @@ class Bridge : public QObject {
     Q_PROPERTY(QVariantList projects READ projects NOTIFY workspacesChanged)
     Q_PROPERTY(bool webBusy READ webBusy NOTIFY busyChanged)
     Q_PROPERTY(QVariantList webSources READ webSources NOTIFY screenChanged)
+    Q_PROPERTY(QStringList attachments READ attachments NOTIFY screenChanged)
 
 public:
     explicit Bridge(QObject* parent = nullptr);
@@ -136,9 +137,12 @@ public:
     Q_INVOKABLE void installCudaOfficial();
     Q_INVOKABLE void dismissEnvSetup();
     Q_INVOKABLE void webSearch(const QString& query, bool thenAsk);
+    void fetchWeb(const QString& query, bool thenAsk, int engine);
     Q_INVOKABLE void copyText(const QString& text);
     Q_INVOKABLE bool exportChat(const QUrl& target);
     Q_INVOKABLE void clearContext();
+    Q_INVOKABLE void attachFiles(const QVariantList& urls);
+    QStringList attachments() const { return attach_names_; }
     bool webBusy() const { return web_busy_; }
     QVariantList webSources() const { return web_sources_; }
 
@@ -202,6 +206,8 @@ private:
         QString text;
         QString path;
         bool error = false;
+        QString time;
+        QStringList tools;
     };
 
     QString L(const char* zh, const char* en) const { return lang_ == "zh" ? QString::fromUtf8(zh) : QString::fromUtf8(en); }
@@ -250,6 +256,9 @@ private:
     bool web_busy_ = false;
     QVariantList web_sources_;
     QString web_context_;
+    QString attach_context_;
+    QStringList attach_names_;
+    QStringList turn_tools_;
     void* window_ = nullptr;
     QString account_msg_;
     QString valDir() const { return QString::fromStdWString(data_dir_); }
