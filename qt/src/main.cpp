@@ -16,9 +16,9 @@ int main(int argc, char* argv[]) {
 
     app.setApplicationName(QStringLiteral("VAL-DAL"));
     app.setOrganizationName("Rogue Intelligence");
-    // Basic is the lightest Quick Controls style; the scene graph still
-    // renders with Direct3D 11 on Windows 10/11 when a GPU is present.
-    QQuickStyle::setStyle(QStringLiteral("Basic"));
+    // Windows 11 native Fluent style (Qt 6.8 FluentWinUI3): system accent,
+    // native title-bar integration, light/dark follows Bridge::setDarkTheme.
+    QQuickStyle::setStyle(QStringLiteral("FluentWinUI3"));
 
     Bridge bridge;
     QQmlApplicationEngine engine;

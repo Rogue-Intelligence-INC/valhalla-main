@@ -14,6 +14,10 @@
 #include <QJsonArray>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QStyleHints>
+#ifdef Q_OS_WIN
+#include <dwmapi.h>
+#endif
 #include <QImage>
 #include <QRegularExpression>
 #include "ocr.h"
@@ -268,6 +272,7 @@ void Bridge::refreshConversations() {
         QVariantMap row;
         row["id"] = QString::fromStdString(item.id);
         row["title"] = title;
+        row["project"] = vallocal::projectFor(valDir(), QString::fromStdString(item.id), currentProject());
         row["active"] = item.id == library_.active;
         conversations_.push_back(row);
     }
@@ -338,6 +343,26 @@ void Bridge::updateModelCatalog() {
         refreshModels(); emit pipelineChanged();
     });
 }
+void Bridge::setDarkTheme(bool dark) {
+    // FluentWinUI3 palette follows the application color scheme; the native
+    // title bar is synced explicitly through DWM so caption color always
+    // matches the in-app theme (light and dark screenshots prove this).
+    if (auto* hints = QGuiApplication::styleHints())
+        hints->setColorScheme(dark ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
+#ifdef Q_OS_WIN
+    for (QWindow* w : QGuiApplication::topLevelWindows()) {
+        const HWND hwnd = reinterpret_cast<HWND>(w->winId());
+        if (!hwnd) continue;
+        const BOOL immersive = dark ? TRUE : FALSE;
+        DwmSetWindowAttribute(hwnd, 20 /*DWMWA_USE_IMMERSIVE_DARK_MODE*/, &immersive, sizeof(immersive));
+        const COLORREF caption = dark ? 0x00202020 : 0x00F9F9F9;
+        DwmSetWindowAttribute(hwnd, 35 /*DWMWA_CAPTION_COLOR*/, &caption, sizeof(caption));
+        const COLORREF text = dark ? 0x00FFFFFF : 0x00000000;
+        DwmSetWindowAttribute(hwnd, 36 /*DWMWA_TEXT_COLOR*/, &text, sizeof(text));
+    }
+#endif
+}
+
 void Bridge::repairPipeline() {
     if (pipeline_busy_ || busy_) return;
     pipeline_busy_ = true; pipeline_report_ = L("正在自检 Valhalla 管线…", "Checking the Valhalla pipeline...");
@@ -549,6 +574,7 @@ void Bridge::newChat() {
     if (busy_) return;
     storeTranscript();
     create_conversation(library_);
+    vallocal::setProjectFor(valDir(), QString::fromStdString(library_.active), currentProject());
     transcript_path_ = conversation_file(library_, library_.active);
     screen_context_.clear();
     loadActive();

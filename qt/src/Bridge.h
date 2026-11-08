@@ -11,6 +11,7 @@
 
 #include "desktop.h"
 #include "engine.h"
+#include "val_local_store.h"
 #include "knowledge.h"
 #include "sessions.h"
 #include "tts.h"
@@ -53,6 +54,16 @@ class Bridge : public QObject {
     Q_PROPERTY(bool envReady READ envReady NOTIFY envChanged)
     Q_PROPERTY(QString envReport READ envReport NOTIFY envChanged)
     Q_PROPERTY(bool envDismissed READ envDismissed NOTIFY envChanged)
+    Q_PROPERTY(QVariantList accounts READ accounts NOTIFY accountsChanged)
+    Q_PROPERTY(QString currentUser READ currentUser NOTIFY accountsChanged)
+    Q_PROPERTY(QString accountRole READ accountRole NOTIFY accountsChanged)
+    Q_PROPERTY(bool accountsEnabled READ accountsEnabled NOTIFY accountsChanged)
+    Q_PROPERTY(bool enterpriseActive READ enterpriseActive NOTIFY accountsChanged)
+    Q_PROPERTY(QString accountMsg READ accountMsg NOTIFY accountsChanged)
+    Q_PROPERTY(QVariantList workspaces READ workspaces NOTIFY workspacesChanged)
+    Q_PROPERTY(QString currentWorkspace READ currentWorkspace NOTIFY workspacesChanged)
+    Q_PROPERTY(QString currentProject READ currentProject NOTIFY workspacesChanged)
+    Q_PROPERTY(QVariantList projects READ projects NOTIFY workspacesChanged)
 
 public:
     explicit Bridge(QObject* parent = nullptr);
@@ -94,6 +105,7 @@ public:
     QString envReport();
     bool envDismissed();
 
+    Q_INVOKABLE void setDarkTheme(bool dark);
     Q_INVOKABLE void repairPipeline();
     Q_INVOKABLE void updateModelCatalog();
     Q_INVOKABLE void claimWindow();
@@ -121,7 +133,46 @@ public:
     Q_INVOKABLE void installCudaOfficial();
     Q_INVOKABLE void dismissEnvSetup();
 
+    // Local accounts + workspaces/projects (shared val_local_store.h, same API in all editions)
+    QVariantList accounts() const { return vallocal::accountsList(valDir()); }
+    QString currentUser() const { return vallocal::loadAccounts(valDir()).value("currentUser").toString(QStringLiteral("本机用户")); }
+    QString accountRole() const { return vallocal::accountRole(valDir()); }
+    bool accountsEnabled() const { return vallocal::loadAccounts(valDir()).value("accountsEnabled").toBool(false); }
+    bool enterpriseActive() const { return vallocal::loadAccounts(valDir()).value("enterpriseActive").toBool(false); }
+    QString accountMsg() const { return account_msg_; }
+    QVariantList workspaces() const { return vallocal::workspaceList(valDir()); }
+    QString currentWorkspace() const { return vallocal::loadWorkspaces(valDir()).value("currentWorkspace").toString(); }
+    QString currentProject() const { return vallocal::loadWorkspaces(valDir()).value("currentProject").toString(); }
+    QVariantList projects() const { return vallocal::projectList(valDir()); }
+    Q_INVOKABLE void addAccount(const QString& name, const QString& password, const QString& role) {
+        const QString err = vallocal::addAccount(valDir(), name, password, role);
+        account_msg_ = err.isEmpty() ? L("账号已创建。", "Account created.") : (err.startsWith("limit") ? L("本地账号上限 3 个，企业版可解锁更多。", "3 local accounts max; Enterprise unlocks more.") : err);
+        emit accountsChanged();
+    }
+    Q_INVOKABLE void removeAccount(const QString& name) { vallocal::removeAccount(valDir(), name); emit accountsChanged(); }
+    Q_INVOKABLE void setAccountEnabled(const QString& name, bool enabled) { vallocal::setAccountEnabled(valDir(), name, enabled); emit accountsChanged(); }
+    Q_INVOKABLE void resetAccountPassword(const QString& name, const QString& password) { vallocal::resetAccountPassword(valDir(), name, password); account_msg_ = L("密码已重置。", "Password reset."); emit accountsChanged(); }
+    Q_INVOKABLE bool login(const QString& name, const QString& password) {
+        const bool ok = vallocal::login(valDir(), name, password);
+        account_msg_ = ok ? L("已登录。", "Signed in.") : L("账号或密码不正确，或账号已停用。", "Wrong credentials or disabled account.");
+        emit accountsChanged();
+        return ok;
+    }
+    Q_INVOKABLE void logout() { vallocal::logout(valDir()); emit accountsChanged(); }
+    Q_INVOKABLE void setAccountsEnabled(bool enabled) {
+        auto r = vallocal::loadAccounts(valDir()); r["accountsEnabled"] = enabled; vallocal::writeJson(valDir() + "/accounts.json", r); emit accountsChanged();
+    }
+    Q_INVOKABLE void setEnterpriseActive(bool active) {
+        auto r = vallocal::loadAccounts(valDir()); r["enterpriseActive"] = active; vallocal::writeJson(valDir() + "/accounts.json", r); emit accountsChanged();
+    }
+    Q_INVOKABLE void addWorkspace(const QString& name) { vallocal::addWorkspace(valDir(), name); emit workspacesChanged(); }
+    Q_INVOKABLE void switchWorkspace(const QString& name) { vallocal::switchWorkspace(valDir(), name); emit workspacesChanged(); }
+    Q_INVOKABLE void addProject(const QString& name) { vallocal::addProject(valDir(), name); emit workspacesChanged(); }
+    Q_INVOKABLE void switchProject(const QString& name) { vallocal::switchProject(valDir(), name); emit workspacesChanged(); }
+
 signals:
+    void accountsChanged();
+    void workspacesChanged();
     void conversationsChanged();
     void messagesChanged();
     void modelsChanged();
@@ -188,4 +239,6 @@ private:
     bool busy_ = false;
     bool task_mode_ = false;
     void* window_ = nullptr;
+    QString account_msg_;
+    QString valDir() const { return QString::fromStdWString(data_dir_); }
 };
