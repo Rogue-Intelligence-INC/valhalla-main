@@ -95,6 +95,24 @@ ApplicationWindow {
         Text { text: detail; font.pixelSize: 11; color: win.dark ? "#c8c8c8" : "#5d5d5d"; Layout.fillWidth: true; Layout.leftMargin: 18; wrapMode: Text.Wrap }
     }
 
+
+    // ===== Status page-popup: the ONLY place pipeline/model/connection status lives =====
+    Popup { id: statusPopup; x: 12; y: win.height - height - 12; width: 340; height: statusCol.implicitHeight + 28; modal: false; focus: true; closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        ColumnLayout { id: statusCol; anchors.fill: parent; spacing: 8
+            RowLayout { Layout.fillWidth: true
+                Text { text: t("状态", "Status"); font.pixelSize: 14; font.weight: Font.DemiBold; color: win.dark ? "#fff" : "#1b1b1b"; Layout.fillWidth: true }
+                ToolButton { text: "✕"; onClicked: statusPopup.close() }
+            }
+            SigRow { name: t("Valhalla 管线", "Valhalla pipeline"); state: win.sigPipeline(); detail: bridge.enginePresent ? t("引擎在 · 五段管线", "Engine present · 5-stage pipeline") : t("引擎不在", "Engine missing") }
+            SigRow { name: t("本地模型", "Local model"); state: win.sigModel(); detail: bridge.currentModelName + " · " + (bridge.modelLoaded ? t("已加载", "Loaded") : t("未加载", "Not loaded")) + " · " + bridge.computeDevice }
+            SigRow { name: t("连接", "Connection"); state: win.sigLink(); detail: (bridge.enginePresent ? t("引擎在", "Engine present") : t("引擎不在", "Engine missing")) + " · " + (store.plan !== "" ? (t("在线 ", "Online ") + win.cdkPlanName(store.plan)) : t("本地（在线未配置）", "Local (online not configured)")) }
+            Text { text: t("图例：● 绿 正常 · 黄 忙/未配置 · 红 异常", "Legend: green OK · yellow busy/unconfigured · red error"); font.pixelSize: 10; color: win.dark ? "#c8c8c8" : "#5d5d5d"; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            MenuSeparator { Layout.fillWidth: true }
+            Text { text: bridge.runtimeText; font.pixelSize: 10; color: win.dark ? "#c8c8c8" : "#5d5d5d"; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            Button { text: t("检查运行时", "Probe runtime"); enabled: !bridge.busy; onClicked: bridge.probe() }
+        }
+    }
+
     Timer { id: grabTimer; interval: 2500; onTriggered: rootRow.grabToImage(function(r){ r.saveToFile("C:/Ai/rogue-products/valhalla-windows/qt/shots/" + win.grabName); console.log("GRABBED") }, Qt.size(1360, 860)) }
 
     RowLayout { id: rootRow
@@ -103,8 +121,12 @@ ApplicationWindow {
         // ===== Navigation pane (NavigationView-style, Fluent controls) =====
         Pane {
             Layout.preferredWidth: 248; Layout.fillHeight: true; padding: 10
+            // dot-matrix accent (design language)
+            Grid { anchors.top: parent.top; anchors.left: parent.left; anchors.right: parent.right; height: 74; columns: 14; spacing: 7; opacity: 0.35; z: 0
+                Repeater { model: 42
+                    Rectangle { required property int index; width: 3; height: 3; radius: 1.5; color: win.dark ? "#3a3f45" : "#cfd4d8" } } }
             ColumnLayout {
-                anchors.fill: parent; spacing: 4
+                anchors.fill: parent; spacing: 4; z: 1
                 RowLayout { Layout.fillWidth: true; spacing: 8
                     Image { source: win.dark ? "qrc:/qt/qml/Valhalla/logo-white.png" : "qrc:/qt/qml/Valhalla/logo-black.png"; Layout.preferredWidth: 28; Layout.preferredHeight: 28; fillMode: Image.PreserveAspectFit }
                     ColumnLayout { spacing: 0; Layout.fillWidth: true
@@ -115,17 +137,24 @@ ApplicationWindow {
                 MenuSeparator { Layout.fillWidth: true }
                 NavItem { glyph: "💬"; text: t("对话", "Chat"); current: win.page === 0; onClicked: win.page = 0 }
                 NavItem { glyph: "🗂"; text: t("工作区", "Workspace"); current: win.page === 1; onClicked: win.page = 1 }
-                NavItem { glyph: "📚"; text: t("知识库", "Knowledge"); current: win.page === 2 && win.settingsSection === 2; onClicked: win.goSettings(2) }
                 Item { Layout.fillHeight: true }
-                // compact status signal (same mapping as inspector group)
-                RowLayout { Layout.fillWidth: true; spacing: 5
-                    Repeater { model: [win.sigPipeline(), win.sigModel(), win.sigLink()]
-                        Rectangle { required property int modelData; width: 8; height: 8; radius: 4; color: win.sigColor(modelData) } }
-                    Text { text: bridge.busy ? t("忙", "Busy") : t("状态", "Status"); font.pixelSize: 10; color: win.dark ? "#c8c8c8" : "#5d5d5d"; Layout.fillWidth: true }
-                }
-                RowLayout { Layout.fillWidth: true; spacing: 8
-                    Text { text: "👤"; font.pixelSize: 15 }
-                    Text { text: bridge.currentUser + " · " + bridge.accountRole; font.pixelSize: 11; color: win.dark ? "#e8e8e8" : "#333"; Layout.fillWidth: true; elide: Text.ElideRight; wrapMode: Text.Wrap }
+                // Single status entry: click opens the status page-popup (pipeline/model/connection live only there)
+                Button { Layout.fillWidth: true; flat: true; ToolTip.visible: hovered; ToolTip.text: t("查看管线、模型与连接状态", "View pipeline, model and connection status")
+                    contentItem: ColumnLayout { spacing: 3
+                        RowLayout { spacing: 5
+                            Repeater { model: [win.sigPipeline(), win.sigModel(), win.sigLink()]
+                                Rectangle { required property int modelData; width: 8; height: 8; radius: 4; color: win.sigColor(modelData) } }
+                            Text { text: store.plan !== "" ? t("在线", "Online") : t("本地", "Local"); font.pixelSize: 10; font.weight: Font.DemiBold; color: win.dark ? "#c8c8c8" : "#5d5d5d" }
+                            Text { text: bridge.busy ? t("· 处理中", "· Working") : ""; font.pixelSize: 10; color: win.dark ? "#c8c8c8" : "#5d5d5d" }
+                            Item { Layout.fillWidth: true }
+                            Text { text: "›"; font.pixelSize: 13; color: win.dark ? "#c8c8c8" : "#5d5d5d" }
+                        }
+                        RowLayout { spacing: 8
+                            Text { text: "👤"; font.pixelSize: 15 }
+                            Text { text: bridge.currentUser + " · " + bridge.accountRole; font.pixelSize: 11; color: win.dark ? "#e8e8e8" : "#333"; Layout.fillWidth: true; elide: Text.ElideRight; wrapMode: Text.Wrap }
+                        }
+                    }
+                    onClicked: statusPopup.open()
                 }
                 NavItem { glyph: "⚙"; text: t("设置", "Settings"); current: win.page === 2; onClicked: win.goSettings(win.settingsSection) }
             }
@@ -139,7 +168,6 @@ ApplicationWindow {
                 RowLayout { anchors.fill: parent; spacing: 8
                     Text { text: (win.page === 2 ? t("设置", "Settings") : win.page === 1 ? t("工作区", "Workspace") : (bridge.currentWorkspace + " / " + bridge.currentProject + " / " + bridge.chatTitle)); font.pixelSize: 12; color: win.dark ? "#e8e8e8" : "#333"; Layout.maximumWidth: 520; elide: Text.ElideRight; wrapMode: Text.Wrap }
                     Item { Layout.fillWidth: true }
-                    Text { text: store.plan !== "" ? t("在线", "Online") : t("本地", "Local"); font.pixelSize: 11; font.weight: Font.DemiBold; color: store.plan !== "" ? "#0f7b0f" : (win.dark ? "#c8c8c8" : "#5d5d5d"); wrapMode: Text.Wrap }
                     ToolButton { text: win.dark ? "☀" : "☾"; ToolTip.visible: hovered; ToolTip.text: t("切换浅色/深色主题", "Toggle light/dark theme"); onClicked: win.dark = !win.dark }
                     ToolButton { text: "▤"; visible: win.page === 0; ToolTip.visible: hovered; ToolTip.text: t("状态面板", "Status panel"); onClicked: win.inspectorOpen = !win.inspectorOpen }
                 }
@@ -158,6 +186,10 @@ ApplicationWindow {
                                 Button { text: t("一键配置", "Set up"); onClicked: bridge.setupEnvironment() }
                                 Button { text: t("关闭", "Dismiss"); flat: true; onClicked: bridge.dismissEnvSetup() }
                             }
+                        }
+                        ColumnLayout { Layout.fillWidth: true; spacing: 1; Layout.leftMargin: 12; Layout.rightMargin: 12
+                            Text { text: "VALHALLA PIPELINE · " + (store.plan !== "" ? t("在线", "ONLINE") : t("本地", "LOCAL")); font.pixelSize: 9; font.weight: Font.DemiBold; color: win.dark ? "#8a8a8a" : "#8a8a8a"; Layout.fillWidth: true }
+                            Text { text: bridge.chatTitle; font.pixelSize: 19; font.weight: Font.DemiBold; color: win.dark ? "#fff" : "#1b1b1b"; Layout.fillWidth: true; elide: Text.ElideRight }
                         }
                         ListView {
                             id: msgList; Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 10
@@ -201,12 +233,6 @@ ApplicationWindow {
                     // ===== Inspector: the single status-signal group + vertical timeline =====
                     Pane { visible: win.inspectorOpen; Layout.preferredWidth: 272; Layout.fillHeight: true; padding: 10
                         ColumnLayout { anchors.fill: parent; spacing: 8
-                            Text { text: t("状态信号", "Status signals"); font.pixelSize: 13; font.weight: Font.DemiBold; color: win.dark ? "#fff" : "#1b1b1b" }
-                            SigRow { name: t("Valhalla 管线", "Valhalla pipeline"); state: win.sigPipeline(); detail: bridge.enginePresent ? t("引擎在 · 五段管线", "Engine present · 5-stage pipeline") : t("引擎不在", "Engine missing") }
-                            SigRow { name: t("本地模型", "Local model"); state: win.sigModel(); detail: bridge.currentModelName + " · " + (bridge.modelLoaded ? t("已加载", "Loaded") : t("未加载", "Not loaded")) + " · " + bridge.computeDevice }
-                            SigRow { name: t("连接", "Connection"); state: win.sigLink(); detail: (bridge.enginePresent ? t("引擎在", "Engine present") : t("引擎不在", "Engine missing")) + " · " + (store.plan !== "" ? (t("在线 ", "Online ") + win.cdkPlanName(store.plan)) : t("本地（在线未配置）", "Local (online not configured)")) }
-                            Text { text: t("图例：● 绿 正常 · 黄 忙/未配置 · 红 异常", "Legend: green OK · yellow busy/unconfigured · red error"); font.pixelSize: 10; color: win.dark ? "#c8c8c8" : "#5d5d5d"; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                            MenuSeparator { Layout.fillWidth: true }
                             Text { text: t("执行阶段", "Execution stages"); font.pixelSize: 13; font.weight: Font.DemiBold; color: win.dark ? "#fff" : "#1b1b1b" }
                             Repeater { model: [t("理解", "Understand"), t("检索", "Retrieve"), t("组织", "Organize"), t("回答", "Answer")]
                                 RowLayout { required property int index; required property string modelData; spacing: 8
@@ -214,9 +240,6 @@ ApplicationWindow {
                                     Text { text: modelData + (win.stageState(index) === 1 && bridge.busy ? " …" : ""); font.pixelSize: 12; color: win.dark ? "#e8e8e8" : "#333" }
                                 } }
                             Text { text: bridge.lastBadge ? (t("最近路径：", "Last path: ") + bridge.lastBadge + " · " + bridge.lastElapsed) : t("尚无已完成轮次", "No completed turn yet"); font.pixelSize: 10; color: win.dark ? "#c8c8c8" : "#5d5d5d"; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                            MenuSeparator { Layout.fillWidth: true }
-                            Text { text: bridge.runtimeText; font.pixelSize: 10; color: win.dark ? "#c8c8c8" : "#5d5d5d"; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                            Button { text: t("检查运行时", "Probe runtime"); enabled: !bridge.busy; onClicked: bridge.probe() }
                             Item { Layout.fillHeight: true }
                         }
                     }
@@ -249,8 +272,17 @@ ApplicationWindow {
                     }
                 }
 
-                // ===== Settings page (single, full-screen; 5 fixed sections) =====
-                RowLayout { spacing: 0
+                // ===== Settings page (standalone page; back returns to chat; 5 fixed sections) =====
+                ColumnLayout { spacing: 0
+                    Pane { Layout.fillWidth: true; padding: 8
+                        RowLayout { anchors.fill: parent; spacing: 8
+                            ToolButton { text: "←"; ToolTip.visible: hovered; ToolTip.text: t("返回对话", "Back to chat"); onClicked: win.page = 0 }
+                            Text { text: t("设置", "Settings"); font.pixelSize: 16; font.weight: Font.DemiBold; color: win.dark ? "#fff" : "#1b1b1b" }
+                            Item { Layout.fillWidth: true }
+                            Text { text: t("Valhalla 模式", "Valhalla mode"); font.pixelSize: 10; color: win.dark ? "#c8c8c8" : "#5d5d5d" }
+                        }
+                    }
+                    RowLayout { Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
                     Pane { Layout.preferredWidth: 210; Layout.fillHeight: true; padding: 8
                         ListView { anchors.fill: parent; clip: true; model: [t("管线与模型", "Pipeline & models"), t("在线大模型", "Online model"), t("知识库", "Knowledge"), t("外观与语言", "Appearance & language"), t("账号与关于", "Account & about")]
                             delegate: ItemDelegate { required property int index; required property string modelData; width: ListView.view.width; text: (index + 1) + "  " + modelData; highlighted: win.settingsSection === index; onClicked: win.settingsSection = index } }
@@ -346,6 +378,7 @@ ApplicationWindow {
         }
     }
 
+                }
     Dialog { id: ctlDlg; title: t("启用电脑控制？", "Enable computer control?"); modal: true; standardButtons: Dialog.Ok | Dialog.Cancel
         Text { text: t("开启后，回答中的控制动作会在本机执行。请确认你信任当前知识与提问内容。", "Control actions in answers will run on this PC. Confirm you trust the current knowledge and prompts."); wrapMode: Text.Wrap; width: 360; color: win.dark ? "#e8e8e8" : "#333" }
         onAccepted: bridge.setAllowControl(true); onRejected: { ctlSwitch.checked = false; bridge.setAllowControl(false) } }
