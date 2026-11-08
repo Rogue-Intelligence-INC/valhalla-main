@@ -4,6 +4,7 @@
 #include <QString>
 #include <QStringList>
 #include <QVariantList>
+#include <QUrl>
 
 #include <string>
 #include <utility>
@@ -64,6 +65,8 @@ class Bridge : public QObject {
     Q_PROPERTY(QString currentWorkspace READ currentWorkspace NOTIFY workspacesChanged)
     Q_PROPERTY(QString currentProject READ currentProject NOTIFY workspacesChanged)
     Q_PROPERTY(QVariantList projects READ projects NOTIFY workspacesChanged)
+    Q_PROPERTY(bool webBusy READ webBusy NOTIFY busyChanged)
+    Q_PROPERTY(QVariantList webSources READ webSources NOTIFY screenChanged)
 
 public:
     explicit Bridge(QObject* parent = nullptr);
@@ -132,6 +135,12 @@ public:
     Q_INVOKABLE void setupEnvironment();
     Q_INVOKABLE void installCudaOfficial();
     Q_INVOKABLE void dismissEnvSetup();
+    Q_INVOKABLE void webSearch(const QString& query, bool thenAsk);
+    Q_INVOKABLE void copyText(const QString& text);
+    Q_INVOKABLE bool exportChat(const QUrl& target);
+    Q_INVOKABLE void clearContext();
+    bool webBusy() const { return web_busy_; }
+    QVariantList webSources() const { return web_sources_; }
 
     // Local accounts + workspaces/projects (shared val_local_store.h, same API in all editions)
     QVariantList accounts() const { return vallocal::accountsList(valDir()); }
@@ -238,6 +247,9 @@ private:
     double last_seconds_ = -1;
     bool busy_ = false;
     bool task_mode_ = false;
+    bool web_busy_ = false;
+    QVariantList web_sources_;
+    QString web_context_;
     void* window_ = nullptr;
     QString account_msg_;
     QString valDir() const { return QString::fromStdWString(data_dir_); }

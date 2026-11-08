@@ -15,6 +15,7 @@
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QStyleHints>
+#include <QClipboard>
 #ifdef Q_OS_WIN
 #include <dwmapi.h>
 #endif
@@ -57,6 +58,7 @@ int strategyIndexOf(const std::string& id) {
 
 QString badgeFor(const QString& path, bool zh) {
     if (path.isEmpty()) return {};
+    if (path == QStringLiteral("web")) return zh ? QStringLiteral("联网来源") : QStringLiteral("Web sources");
     if (!path.contains('/') && !path.contains("valhalla", Qt::CaseInsensitive)) return path;
     const QString folded = path.toLower();
     if (folded.contains("mcq") || folded.contains("logprob")) return zh ? QStringLiteral("选择题混合") : QStringLiteral("Hybrid choice");
@@ -523,7 +525,8 @@ void Bridge::send(const QString& raw) {
     last_question_ = question;
     const std::string session = settings_.keep_session ? session_json_ : std::string();
     const auto history = history_;
-    const std::string screen = screen_context_;
+    const std::string screen = web_context_.isEmpty() ? screen_context_
+        : (web_context_.toStdString() + (screen_context_.empty() ? std::string() : "\n\n" + screen_context_));
     const bool allow_control = settings_.allow_control;
     QString asked = question;
     if (task_mode_) asked = L("这是一项要完成的任务。直接做完，并给出结果。\n", "This is a task to finish. Do it and report the result.\n") + question;
@@ -577,6 +580,8 @@ void Bridge::newChat() {
     vallocal::setProjectFor(valDir(), QString::fromStdString(library_.active), currentProject());
     transcript_path_ = conversation_file(library_, library_.active);
     screen_context_.clear();
+    web_context_.clear();
+    web_sources_.clear();
     loadActive();
     storeTranscript();
     setStatus(framework_note_);
@@ -746,6 +751,115 @@ void Bridge::probe() {
             emit runtimeChanged();
         }, Qt::QueuedConnection);
     }).detach();
+}
+
+// ---------------- agent tools: web search, copy, export, context ----------------
+namespace {
+QString htmlToText(QString s) {
+    static const QRegularExpression tags(QStringLiteral("<[^>]+>"));
+    static const QRegularExpression spaces(QStringLiteral("\\s+"));
+    s.remove(tags);
+    s.replace(QStringLiteral("&amp;"), QStringLiteral("&")).replace(QStringLiteral("&quot;"), QStringLiteral("\""))
+     .replace(QStringLiteral("&#39;"), QStringLiteral("'")).replace(QStringLiteral("&#x27;"), QStringLiteral("'"))
+     .replace(QStringLiteral("&lt;"), QStringLiteral("<")).replace(QStringLiteral("&gt;"), QStringLiteral(">"))
+     .replace(QStringLiteral("&nbsp;"), QStringLiteral(" ")).replace(QStringLiteral("&ensp;"), QStringLiteral(" "))
+     .replace(QStringLiteral("&#0183;"), QStringLiteral("·"));
+    return s.replace(spaces, QStringLiteral(" ")).trimmed();
+}
+
+QVariantList parseBing(const QString& html) {
+    QVariantList out;
+    static const QRegularExpression title(QStringLiteral("<h2[^>]*>\\s*<a[^>]*href=\"([^\"]+)\"[^>]*>(.*?)</a>"),
+                                          QRegularExpression::DotMatchesEverythingOption);
+    static const QRegularExpression snippet(QStringLiteral("<p[^>]*>(.*?)</p>"), QRegularExpression::DotMatchesEverythingOption);
+    static const QRegularExpression cite(QStringLiteral("<cite[^>]*>(.*?)</cite>"), QRegularExpression::DotMatchesEverythingOption);
+    const QStringList blocks = html.split(QStringLiteral("<li class=\"b_algo\""));
+    for (int i = 1; i < blocks.size() && out.size() < 5; ++i) {
+        const QString& b = blocks[i];
+        const auto t = title.match(b);
+        if (!t.hasMatch()) continue;
+        QString url = t.captured(1);
+        if (url.contains(QStringLiteral("bing.com/ck/"))) {
+            const auto c = cite.match(b);
+            if (c.hasMatch()) url = htmlToText(c.captured(1));
+        }
+        const auto p = snippet.match(b);
+        QVariantMap row;
+        row["title"] = htmlToText(t.captured(2));
+        row["url"] = htmlToText(url);
+        row["snippet"] = p.hasMatch() ? htmlToText(p.captured(1)).left(240) : QString();
+        out.push_back(row);
+    }
+    return out;
+}
+}
+
+void Bridge::webSearch(const QString& raw, bool thenAsk) {
+    const QString query = raw.trimmed();
+    if (query.isEmpty() || busy_ || web_busy_) return;
+    web_busy_ = true;
+    emit busyChanged();
+    setStatus(L("正在联网查找…", "Searching the web…"));
+    QUrl url(QStringLiteral("https://cn.bing.com/search"));
+    url.setQuery(QStringLiteral("q=") + QString::fromLatin1(QUrl::toPercentEncoding(query)) +
+                 (lang_ == "zh" ? QStringLiteral("&setlang=zh-Hans") : QStringLiteral("&setlang=en")));
+    QNetworkRequest req(url);
+    req.setHeader(QNetworkRequest::UserAgentHeader,
+                  QStringLiteral("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"));
+    req.setTransferTimeout(12000);
+    auto* nam = new QNetworkAccessManager(this);
+    QNetworkReply* reply = nam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, nam, query, thenAsk]() {
+        reply->deleteLater(); nam->deleteLater();
+        web_busy_ = false;
+        emit busyChanged();
+        const bool ok = reply->error() == QNetworkReply::NoError;
+        web_sources_ = ok ? parseBing(QString::fromUtf8(reply->readAll())) : QVariantList{};
+        QString block;
+        for (int i = 0; i < web_sources_.size(); ++i) {
+            const QVariantMap r = web_sources_[i].toMap();
+            block += QStringLiteral("[%1] %2\n%3\n%4\n").arg(i + 1).arg(r["title"].toString(), r["snippet"].toString(), r["url"].toString());
+        }
+        web_context_ = block.isEmpty() ? QString() : (L("联网查找结果（", "Web results (") + query + QStringLiteral(")：\n") + block);
+        emit screenChanged();
+        const QString note = web_sources_.isEmpty()
+            ? (ok ? L("联网查找没有找到结果。", "Web search returned no results.")
+                  : L("联网查找失败：网络不可用或被拦截。", "Web search failed: network unavailable or blocked."))
+            : L("联网查找：找到 %1 条来源，已带入上下文。", "Web search: %1 sources added to context.").arg(web_sources_.size());
+        setStatus(note);
+        if (thenAsk) send(query);
+        if (!web_sources_.isEmpty()) {
+            lines_.push_back(Line{false, block.trimmed(), QStringLiteral("web")});
+            refreshMessages();
+        }
+    });
+}
+
+void Bridge::copyText(const QString& text) {
+    if (auto* cb = QGuiApplication::clipboard()) cb->setText(text);
+    setStatus(L("已复制", "Copied"));
+}
+
+bool Bridge::exportChat(const QUrl& target) {
+    const QString path = target.isLocalFile() ? target.toLocalFile() : target.toString();
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) { setStatus(L("导出失败：无法写入文件", "Export failed: cannot write file")); return false; }
+    QString md = QStringLiteral("# ") + chatTitle() + QStringLiteral("\n\n");
+    for (const auto& line : lines_)
+        md += (line.user ? QStringLiteral("**") + currentUser() + QStringLiteral("**") : QStringLiteral("**VAL-DAL**")) + QStringLiteral("\n\n") + line.text + QStringLiteral("\n\n");
+    f.write(md.toUtf8());
+    setStatus(L("已导出：", "Exported: ") + QFileInfo(path).fileName());
+    return true;
+}
+
+void Bridge::clearContext() {
+    screen_context_.clear();
+    reading_ = ScreenReading{};
+    ocr_import_text_.clear();
+    web_context_.clear();
+    web_sources_.clear();
+    setStatus(L("已清空本轮上下文", "Context cleared"));
+    emit screenChanged();
 }
 
 // ---------------- environment (CUDA etc.) ----------------
