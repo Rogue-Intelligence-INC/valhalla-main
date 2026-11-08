@@ -308,9 +308,9 @@ inline QVector<Module> mods(std::initializer_list<std::pair<const char*, const c
 
 inline const QHash<QString, QVector<Module>>& zhongkao() {
     static const QHash<QString, QVector<Module>> t = {
-        {QStringLiteral("数学"), mods({{"数与式", "有理数 实数 绝对值 相反数 倒数 科学记数 整式 分式 根式 二次根式 因式分解 幂 平方根 立方根 约分 通分 化简 代数式"},
-                                        {"方程与不等式", "方程 方程组 不等式 不等式组 解集 一元一次 一元二次 根的判别式 分式方程 应用题 列方程"},
-                                        {"函数", "函数 一次函数 正比例 反比例 二次函数 抛物线 图象 坐标 自变量 顶点 对称轴 解析式 象限"},
+        {QStringLiteral("数学"), mods({{"数与式", "有理数 实数 绝对值 相反数 倒数 科学记数 整式 分式 根式 二次根式 因式分解 幂 平方根 立方根 约分 通分 化简 代数式 计算 乘方 平方差 完全平方 sqrt 10^"},
+                                        {"方程与不等式", "方程 方程组 不等式 不等式组 解集 一元一次 一元二次 根的判别式 分式方程 应用题 列方程 > < ≥ ≤ leqslant geqslant"},
+                                        {"函数", "函数 一次函数 正比例 反比例 二次函数 抛物线 图象 坐标 自变量 顶点 对称轴 解析式 象限 f(x) y= 增大 减小"},
                                         {"图形的性质", "三角形 四边形 平行四边形 矩形 菱形 正方形 梯形 圆 弧 弦 切线 角 平行 垂直 勾股 中位线 多边形 内角 外角"},
                                         {"图形的变化", "全等 相似 对称 轴对称 中心对称 平移 旋转 位似 三视图 投影 展开图 锐角三角函数 sin cos tan"},
                                         {"统计与概率", "统计 概率 平均数 中位数 众数 方差 频数 频率 抽样 样本 扇形图 条形图 折线图 树状图 列表法"}})},
@@ -357,14 +357,14 @@ inline const QHash<QString, QVector<Module>>& zhongkao() {
 inline const QHash<QString, QVector<Module>>& gaokao() {
     static const QHash<QString, QVector<Module>> t = {
         {QStringLiteral("数学"), mods({{"集合与常用逻辑", "集合 交集 并集 补集 子集 充分 必要 命题 量词 逻辑"},
-                                        {"函数与导数", "函数 定义域 值域 单调 奇偶 周期 指数 对数 幂函数 导数 切线 极值 最值 零点"},
+                                        {"函数与导数", "函数 定义域 值域 单调 奇偶 周期 指数 对数 幂函数 导数 切线 极值 最值 零点 \\ln \\lg \\log"},
                                         {"三角函数与解三角形", "三角 正弦 余弦 正切 sin cos tan 诱导公式 解三角形 周期 相位"},
-                                        {"数列", "数列 等差 等比 通项 前n项 递推 求和"},
+                                        {"数列", "数列 等差 等比 通项 前n项 递推 求和 _{n} a_n"},
                                         {"不等式", "不等式 基本不等式 均值 线性规划 恒成立"},
-                                        {"平面向量与复数", "向量 数量积 复数 虚部 实部 共轭 模"},
+                                        {"平面向量与复数", "向量 数量积 复数 虚部 实部 共轭 模 z= bar{z} mathbf{i} 复平面 纯虚数"},
                                         {"立体几何", "棱柱 棱锥 圆柱 圆锥 球 三视图 空间 二面角 线面 面面 平行 垂直 体积 表面积 空间向量"},
                                         {"解析几何", "直线 斜率 圆 椭圆 双曲线 抛物线 离心率 焦点 准线 弦长 渐近线"},
-                                        {"计数原理与概率统计", "概率 排列 组合 二项式 分布列 期望 方差 正态 回归 独立性 抽样 频率分布 统计"}})},
+                                        {"计数原理与概率统计", "概率 排列 组合 二项式 分布列 期望 方差 正态 回归 独立性 抽样 频率分布 统计 分配 方案 不同的"}})},
         {QStringLiteral("语文"), mods({{"语言文字运用", "字音 字形 词语 成语 病句 标点 修辞 语言运用 衔接 补写 压缩"},
                                         {"文言文阅读", "文言 实词 虚词 翻译 断句 文化常识 句式"},
                                         {"古代诗歌阅读", "诗歌 古诗 诗词 意象 意境 鉴赏 表现手法 情感"},
@@ -667,6 +667,315 @@ inline QString report(const QVariantMap& p, const QString& who) {
     for (const QVariant& v : p.value("mastered").toList()) if (good.size() < 8) good << v.toMap()["subject"].toString() + QStringLiteral("·") + v.toMap()["topic"].toString();
     if (!good.isEmpty()) out += QStringLiteral("已掌握：") + good.join(QStringLiteral("、")) + "\n";
     return out.trimmed();
+}
+
+// ---------- ability index: six dimensions and 中考 / 高考 readiness ----------
+
+inline double clamp01(double v) { return std::max(0.0, std::min(1.0, v)); }
+
+inline QString readinessLevel(double p) {
+    return p >= 0.85 ? QStringLiteral("优秀") : p >= 0.70 ? QStringLiteral("良好") : p >= 0.60 ? QStringLiteral("合格") : QStringLiteral("待提高");
+}
+
+// A module of one exam carried over to the other exam's syllabus by its keywords.
+inline QString mapTopic(const QString& subject, const QString& topic, const QString& from, const QString& to) {
+    if (from == to) return topic;
+    QString text = topic;
+    for (const Module& m : modules(subject, from))
+        if (m.name == topic) text += QStringLiteral(" ") + m.keys.join(' ');
+    return topicOf(subject, to == QStringLiteral("高考") ? QStringLiteral("高中") : QStringLiteral("初中"), text);
+}
+
+// Weights and estimates behind the readiness percentage (kept in one place so both apps explain the same numbers).
+inline constexpr double kMasteryWeight = 0.7;
+inline constexpr double kAbilityWeight = 0.3;
+
+struct ScoreSum {
+    double got = 0, full = 0;
+};
+
+inline QVariantMap abilityIndex(const QVector<Record>& all) {
+    QVector<Record> rs = all;
+    std::sort(rs.begin(), rs.end(), [](const Record& a, const Record& b) { return a.time < b.time; });
+    if (rs.isEmpty()) return QVariantMap{{"count", 0}};
+    const QString stage = rs.last().stage.isEmpty() ? QStringLiteral("初中") : rs.last().stage;
+    const QString own = targetFor(stage);
+
+    QStringList subjects;
+    QMap<QString, QVector<double>> ratesBy;
+    QMap<QString, ScoreSum> subjAcc;
+    QMap<QPair<QString, QString>, ScoreSum> topicAcc;
+    QMap<QPair<QString, QString>, QVector<ScoreSum>> perRecord;
+    double recentGot = 0, recentFull = 0;
+    QVector<double> recentRates;
+    const int recentFrom = std::max(0, static_cast<int>(rs.size()) - 10);
+    for (int i = 0; i < rs.size(); ++i) {
+        const Record& r = rs[i];
+        const QString subj = canonicalSubject(r.subject);
+        if (!subjects.contains(subj)) subjects << subj;
+        if (r.rate() >= 0) {
+            ratesBy[subj] << r.rate();
+            if (i >= recentFrom) recentRates << r.rate();
+        }
+        QMap<QString, ScoreSum> inThis;
+        for (const Item& it : r.items) {
+            if (!it.known || it.full <= 0) continue;
+            subjAcc[subj].got += it.got;
+            subjAcc[subj].full += it.full;
+            if (i >= recentFrom) { recentGot += it.got; recentFull += it.full; }
+            if (it.topic == kOther) continue;
+            topicAcc[qMakePair(subj, it.topic)].got += it.got;
+            topicAcc[qMakePair(subj, it.topic)].full += it.full;
+            inThis[it.topic].got += it.got;
+            inThis[it.topic].full += it.full;
+        }
+        for (auto it = inThis.cbegin(); it != inThis.cend(); ++it) perRecord[qMakePair(subj, it.key())] << it.value();
+    }
+    auto mean = [](const QVector<double>& v) { double s = 0; for (double x : v) s += x; return v.isEmpty() ? 0.0 : s / v.size(); };
+    auto subjRate = [&](const QString& s) {
+        if (subjAcc.value(s).full > 0) return subjAcc[s].got / subjAcc[s].full;
+        return mean(ratesBy.value(s));
+    };
+    auto pp = [](double x) { return fmt(std::round(x * 1000) / 10.0); };
+
+    QVariantList dims;
+    double dimSum = 0;
+    auto addDim = [&](const char* key, const char* name, double value, bool known, const QString& detail) {
+        const double v = known ? clamp01(value) : 0.5;
+        dimSum += v;
+        dims << QVariantMap{{"key", QString::fromUtf8(key)}, {"name", QString::fromUtf8(name)}, {"value", v}, {"known", known},
+                            {"detail", known ? detail : detail + QStringLiteral("（数据不足，暂按 50% 计）")}};
+    };
+
+    // 1 mastery
+    if (recentFull > 0)
+        addDim("mastery", "知识掌握", recentGot / recentFull, true,
+               QStringLiteral("最近 %1 次测评逐题统计：得分 %2 / 满分 %3 = %4%。").arg(rs.size() - recentFrom).arg(fmt(recentGot), fmt(recentFull), pp(recentGot / recentFull)));
+    else
+        addDim("mastery", "知识掌握", mean(recentRates), !recentRates.isEmpty(),
+               QStringLiteral("最近测评的平均得分率 %1%（没有逐题记录，按总分计）。").arg(pp(mean(recentRates))));
+
+    // 2 coverage
+    {
+        double sum = 0;
+        int n = 0;
+        QStringList parts;
+        for (const QString& s : subjects) {
+            const QStringList mods = syllabus(s, stage);
+            if (mods.isEmpty()) continue;
+            int tested = 0;
+            for (const QString& m : mods) if (topicAcc.contains(qMakePair(s, m))) ++tested;
+            sum += static_cast<double>(tested) / mods.size();
+            ++n;
+            parts << QStringLiteral("%1 %2/%3").arg(s).arg(tested).arg(mods.size());
+        }
+        addDim("coverage", "考纲覆盖", n ? sum / n : 0, n > 0,
+               QStringLiteral("按%1考纲，已测到的模块：%2。没测到的模块是潜在缺口。").arg(own, parts.join(QStringLiteral("、"))));
+    }
+
+    // 3 stability
+    {
+        double weighted = 0;
+        int count = 0;
+        for (auto it = ratesBy.cbegin(); it != ratesBy.cend(); ++it) {
+            const QVector<double>& v = it.value();
+            if (v.size() < 2) continue;
+            const double m = mean(v);
+            double var = 0;
+            for (double x : v) var += (x - m) * (x - m);
+            weighted += std::sqrt(var / v.size()) * v.size();
+            count += v.size();
+        }
+        const double sd = count ? weighted / count : 0;
+        addDim("stability", "稳定发挥", 1 - sd / 0.25, count > 0,
+               QStringLiteral("同一科目多次测评的得分率标准差约 %1 个百分点（0 为满分，25 个百分点及以上记 0）。").arg(pp(sd)));
+    }
+
+    // 4 progress
+    {
+        double diffSum = 0;
+        int n = 0;
+        for (auto it = ratesBy.cbegin(); it != ratesBy.cend(); ++it) {
+            const QVector<double>& v = it.value();
+            if (v.size() < 2) continue;
+            const int half = static_cast<int>(v.size()) / 2;
+            diffSum += mean(v.mid(v.size() - half)) - mean(v.mid(0, half));
+            ++n;
+        }
+        const double diff = n ? diffSum / n : 0;
+        addDim("progress", "进步趋势", 0.5 + diff * 2.5, n > 0,
+               QStringLiteral("后半段测评比前半段平均%1 %2 个百分点（持平记 50%，提高 20 个百分点记满分）。")
+                   .arg(diff >= 0 ? QStringLiteral("提高") : QStringLiteral("下降"), pp(std::abs(diff))));
+    }
+
+    // 5 balance
+    {
+        QVector<double> rates;
+        QString best, worst;
+        double hi = -1, lo = 2;
+        for (auto it = topicAcc.cbegin(); it != topicAcc.cend(); ++it) {
+            if (it.value().full <= 0) continue;
+            const double r = it.value().got / it.value().full;
+            rates << r;
+            if (r > hi) { hi = r; best = it.key().first + QStringLiteral("·") + it.key().second; }
+            if (r < lo) { lo = r; worst = it.key().first + QStringLiteral("·") + it.key().second; }
+        }
+        const double m = mean(rates);
+        double var = 0;
+        for (double x : rates) var += (x - m) * (x - m);
+        const double sd = rates.size() > 1 ? std::sqrt(var / rates.size()) : 0;
+        addDim("balance", "考点均衡", 1 - sd / 0.3, rates.size() > 1,
+               QStringLiteral("%1 个考点的得分率标准差 %2 个百分点；最强 %3（%4%），最弱 %5（%6%）。")
+                   .arg(rates.size()).arg(pp(sd), best, pp(std::max(0.0, hi)), worst, pp(std::min(1.0, lo))));
+    }
+
+    // 6 correction
+    {
+        int candidates = 0, improved = 0;
+        QStringList fixed, stuck;
+        for (auto it = perRecord.cbegin(); it != perRecord.cend(); ++it) {
+            const QVector<ScoreSum>& seq = it.value();
+            if (seq.size() < 2 || seq[0].full <= 0 || seq[0].got >= seq[0].full) continue;
+            ++candidates;
+            double g = 0, f = 0;
+            for (int i = 1; i < seq.size(); ++i) { g += seq[i].got; f += seq[i].full; }
+            const double first = seq[0].got / seq[0].full, later = f > 0 ? g / f : 0;
+            const QString name = it.key().first + QStringLiteral("·") + it.key().second;
+            if (later >= first + 0.1 || later >= 0.85) { ++improved; fixed << name; }
+            else stuck << name;
+        }
+        addDim("correction", "纠错提升", candidates ? static_cast<double>(improved) / candidates : 0, candidates > 0,
+               QStringLiteral("丢过分又再次考到的考点 %1 个，其中 %2 个明显提高%3%4。")
+                   .arg(candidates).arg(improved)
+                   .arg(fixed.isEmpty() ? QString() : QStringLiteral("（") + fixed.mid(0, 4).join(QStringLiteral("、")) + QStringLiteral("）"),
+                        stuck.isEmpty() ? QString() : QStringLiteral("；仍未改善：") + stuck.mid(0, 4).join(QStringLiteral("、"))));
+    }
+    const double ability = dimSum / 6;
+
+    QVariantList subjectRows;
+    for (const QString& s : subjects)
+        subjectRows << QVariantMap{{"subject", s}, {"rate", subjRate(s)}, {"exams", ratesBy.value(s).size()}};
+
+    QVariantList readiness;
+    const QStringList targets{QStringLiteral("中考"), QStringLiteral("高考")};
+    for (const QString& target : targets) {
+        const int dir = target == own ? 0 : (target == QStringLiteral("高考") ? 1 : -1);
+        const double transfer = dir > 0 ? 0.6 : 1.0;
+        const double guess = dir == 0 ? 0.5 : dir > 0 ? 0.25 : 0.9;
+        double kSum = 0, wSum = 0, est = 0;
+        int testedAll = 0, modsAll = 0;
+        QVariantList rows;
+        for (const QString& s : subjects) {
+            const QVector<Module> mods = modules(s, target);
+            if (mods.isEmpty()) continue;
+            QMap<QString, ScoreSum> mapped;
+            for (auto it = topicAcc.cbegin(); it != topicAcc.cend(); ++it) {
+                if (it.key().first != s) continue;
+                const QString m = mapTopic(s, it.key().second, own, target);
+                if (m == kOther) continue;
+                mapped[m].got += it.value().got;
+                mapped[m].full += it.value().full;
+            }
+            const double sr = subjRate(s);
+            double sum = 0;
+            int tested = 0;
+            for (const Module& m : mods) {
+                if (mapped.value(m.name).full > 0) { sum += clamp01(mapped[m.name].got / mapped[m.name].full * transfer); ++tested; }
+                else sum += sr * guess;
+            }
+            const double mastery = sum / mods.size();
+            const double percent = kMasteryWeight * mastery + kAbilityWeight * ability;
+            const int fm = fullMark(target, s);
+            kSum += mastery * fm;
+            wSum += fm;
+            est += percent * fm;
+            testedAll += tested;
+            modsAll += mods.size();
+            rows << QVariantMap{{"subject", s}, {"mastery", mastery}, {"percent", percent}, {"est", std::round(percent * fm * 10) / 10.0},
+                                {"full", fm}, {"tested", tested}, {"modules", static_cast<int>(mods.size())}};
+        }
+        if (wSum <= 0) continue;
+        const double k = kSum / wSum, p = kMasteryWeight * k + kAbilityWeight * ability;
+        const QString guessText = QStringLiteral("未测模块按该科得分率的 %1% 估算").arg(fmt(guess * 100));
+        const QString transferText = dir > 0 ? QStringLiteral("；初中考点对到高考模块时按 60% 计（高考要求更深）") : QString();
+        readiness << QVariantMap{
+            {"target", target}, {"own", dir == 0}, {"percent", p}, {"mastery", k}, {"ability", ability}, {"level", readinessLevel(p)},
+            {"est", std::round(est * 10) / 10.0}, {"full", wSum}, {"tested", testedAll}, {"modules", modsAll}, {"subjects", rows},
+            {"detail", QStringLiteral("%1能力评估值 = 0.7 × 学习掌握度 %2% + 0.3 × 学习能力评估 %3% = %4%（%5）。掌握度按%1考纲逐模块计算，各科按满分加权；已测 %6/%7 个模块，%8%9。折算约 %10 / %11 分（常见省份满分，各地不同，仅作参考）。")
+                           .arg(target, pp(k), pp(ability), pp(p), readinessLevel(p)).arg(testedAll).arg(modsAll).arg(guessText, transferText, fmt(std::round(est * 10) / 10.0), fmt(wSum))}};
+    }
+    return QVariantMap{{"count", rs.size()}, {"stage", stage}, {"own", own}, {"dims", dims}, {"ability", ability},
+                       {"subjects", subjectRows}, {"readiness", readiness}};
+}
+
+// Plain-text version of abilityIndex for reports and the AI explanation prompt.
+inline QString abilityReport(const QVariantMap& a, const QString& who) {
+    if (a.value("count").toInt() == 0) return who + QStringLiteral("：还没有测评记录。");
+    QString out = who + QStringLiteral("（%1，共 %2 次测评）学习能力评估：%3%（六维平均）。\n")
+                            .arg(a["stage"].toString()).arg(a["count"].toInt()).arg(pct(a["ability"].toDouble()).chopped(1));
+    for (const QVariant& v : a["dims"].toList()) {
+        const QVariantMap d = v.toMap();
+        out += QStringLiteral("· %1 %2：%3\n").arg(d["name"].toString(), pct(d["value"].toDouble()), d["detail"].toString());
+    }
+    for (const QVariant& v : a["readiness"].toList()) {
+        const QVariantMap r = v.toMap();
+        QStringList parts;
+        for (const QVariant& s : r["subjects"].toList()) {
+            const QVariantMap m = s.toMap();
+            parts << QStringLiteral("%1 %2（掌握 %3，已测 %4/%5 模块）").arg(m["subject"].toString(), pct(m["percent"].toDouble()), pct(m["mastery"].toDouble()))
+                         .arg(m["tested"].toInt()).arg(m["modules"].toInt());
+        }
+        out += QStringLiteral("【%1能力评估值 %2 · %3】%4 各科：%5\n").arg(r["target"].toString(), pct(r["percent"].toDouble()), r["level"].toString(),
+                                                                 r["detail"].toString(), parts.join(QStringLiteral("；")));
+    }
+    return out.trimmed();
+}
+
+// Scope: "overall", "dim:<key>", "target:中考|高考" or "subject:<科目>".
+inline QString abilityFocus(const QVariantMap& a, const QString& scope) {
+    const QString arg = scope.section(':', 1);
+    if (scope.startsWith(QStringLiteral("dim:")))
+        for (const QVariant& v : a.value("dims").toList()) {
+            const QVariantMap d = v.toMap();
+            if (d["key"].toString() == arg)
+                return QStringLiteral("「%1」维度（%2）：%3").arg(d["name"].toString(), pct(d["value"].toDouble()), d["detail"].toString());
+        }
+    if (scope.startsWith(QStringLiteral("target:")))
+        for (const QVariant& v : a.value("readiness").toList()) {
+            const QVariantMap r = v.toMap();
+            if (r["target"].toString() == arg) return QStringLiteral("%1能力评估值（%2）：%3").arg(arg, pct(r["percent"].toDouble()), r["detail"].toString());
+        }
+    if (scope.startsWith(QStringLiteral("subject:"))) {
+        QStringList parts;
+        for (const QVariant& v : a.value("subjects").toList())
+            if (v.toMap()["subject"].toString() == arg) parts << QStringLiteral("%1 总得分率 %2").arg(arg, pct(v.toMap()["rate"].toDouble()));
+        for (const QVariant& v : a.value("readiness").toList())
+            for (const QVariant& s : v.toMap()["subjects"].toList())
+                if (s.toMap()["subject"].toString() == arg)
+                    parts << QStringLiteral("%1口径 %2（掌握 %3）").arg(v.toMap()["target"].toString(), pct(s.toMap()["percent"].toDouble()), pct(s.toMap()["mastery"].toDouble()));
+        return QStringLiteral("%1科：%2").arg(arg, parts.join(QStringLiteral("；")));
+    }
+    return QStringLiteral("整体学习能力（六维平均 %1）").arg(pct(a.value("ability").toDouble()));
+}
+
+// True when the model only repeated a line of the data instead of analysing it.
+inline bool echoesCorpus(const QString& corpus, const QString& reply) {
+    QString c = corpus, r = reply;
+    c.remove(QRegularExpression(QStringLiteral("\\s")));
+    r.remove(QRegularExpression(QStringLiteral("\\s")));
+    return r.size() < 12 || c.contains(r);
+}
+
+// The measured data goes in as the retrieval corpus; the question only names the task and the focus.
+inline QString abilityCorpus(const QVariantMap& a, const QString& profileReport, const QString& who) {
+    return abilityReport(a, who) + "\n" + profileReport.left(4000);
+}
+
+inline QString abilityPrompt(const QVariantMap& a, const QString& scope, const QString& who) {
+    return QStringLiteral("你是经验丰富的教研老师。请根据知识里的真实测评数据，分析%1在这一方面的情况：%2\n"
+                          "只用数据里有的事实，不编造分数、题目或考点；数据不足时直接说明还需要测什么。\n"
+                          "按四段输出：1. 现状与数据依据；2. 具体欠缺（落到考点和题型）；3. 可能原因；4. 三条可执行的改进建议（写清做什么、做多久）。")
+        .arg(who, abilityFocus(a, scope));
 }
 
 // One row per student id: name, exams, last / average rate, weak-topic count.
