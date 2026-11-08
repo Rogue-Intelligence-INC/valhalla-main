@@ -1,4 +1,4 @@
-﻿param([ValidateSet('edu','student','all')][string]$Edition = 'all')
+﻿param([ValidateSet('main','edu','student','all')][string]$Edition = 'all')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $setupExe = Join-Path $PSScriptRoot 'dist\ValhallaSetup.exe'
@@ -9,6 +9,15 @@ foreach ($p in @($setupExe, $engineExe, $modelSrc)) {
 }
 
 $editions = @{
+    main = @{
+        SrcDist = Join-Path $root 'qt\dist'
+        PkgName = 'VAL-DAL_A测版_安装包'
+        SetupName = '瓦序VAL-DAL安装.exe'
+        Label = '瓦序 VAL-DAL'
+        Exe = 'Valhalla.exe'
+        DataSub = 'main'
+        Note = '主版：本地对话、知识库、出图，离线可用。'
+    }
     edu = @{
         SrcDist = Join-Path $root 'education\dist'
         PkgName = 'VAL-DAL教育版_A测版_安装包'
@@ -61,7 +70,15 @@ function Build-One($key) {
         Copy-Item (Join-Path $PSScriptRoot 'dist\platforms') $pkg -Recurse
     }
 
-    Copy-Item "$($e.SrcDist)\*" "$pkg\payload\app\" -Recurse -Force
+    # dist\data holds local conversations, accounts and drawings; never ship it.
+    Get-ChildItem $e.SrcDist -Force | Where-Object { $_.Name -ne 'data' } |
+        Copy-Item -Destination "$pkg\payload\app\" -Recurse -Force
+    $banks = Join-Path $e.SrcDist 'data\banks'
+    if ($key -eq 'edu' -and (Test-Path $banks)) {
+        New-Item -ItemType Directory -Force "$pkg\payload\app\data\banks" | Out-Null
+        Get-ChildItem $banks -File | Where-Object { $_.Name -ne 'manifest_downloaded.json' } |
+            Copy-Item -Destination "$pkg\payload\app\data\banks\"
+    }
     Get-ChildItem "$pkg\payload\app" -Filter *.pdb -Recurse -File -ErrorAction SilentlyContinue | Remove-Item -Force
     Copy-Item $engineExe "$pkg\payload\app\"
     # The engine needs the CUDA runtime next to it; not every edition's dist carries it.
@@ -89,4 +106,4 @@ function Build-One($key) {
     Write-Host "Packaged $key -> $pkg (${size}MB)"
 }
 
-if ($Edition -eq 'all') { Build-One 'edu'; Build-One 'student' } else { Build-One $Edition }
+if ($Edition -eq 'all') { 'main','edu','student' | ForEach-Object { Build-One $_ } } else { Build-One $Edition }

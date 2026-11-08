@@ -1,5 +1,8 @@
 #include <QApplication>
 #include <QCheckBox>
+#include <QHBoxLayout>
+#include <QPainter>
+#include <QPixmap>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -98,6 +101,30 @@ bool makeShortcut(const QString& linkPath, const QString& target, const QString&
     return SUCCEEDED(file->Save(linkPath.toStdWString().c_str(), TRUE));
 }
 
+// Brand mark shared with the apps: a 3x3 tile grid rotated -18 degrees.
+QPixmap brandMark(int size) {
+    const qreal dpr = 2.0;
+    QPixmap pm(int(size * dpr), int(size * dpr));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    const qreal u = size / 6.2, gap = u * 0.75, grid = u * 3 + gap * 2;
+    p.translate(size / 2.0, size / 2.0);
+    p.rotate(-18);
+    p.translate(-grid / 2, -grid / 2);
+    const qreal alpha[9] = {1, 0.3, 1, 1, 0, 0.3, 1, 1, 1};
+    for (int i = 0; i < 9; ++i) {
+        if (alpha[i] == 0) continue;
+        QColor c(0xd8, 0xdb, 0xd4);
+        c.setAlphaF(alpha[i]);
+        p.setPen(Qt::NoPen);
+        p.setBrush(c);
+        p.drawRoundedRect(QRectF((i % 3) * (u + gap), (i / 3) * (u + gap), u, u), u * 0.22, u * 0.22);
+    }
+    return pm;
+}
+
 }  // namespace
 
 class Worker : public QThread {
@@ -166,26 +193,54 @@ class Window : public QWidget {
 public:
     Window() {
         setWindowTitle(g_cfg.label + " · A测版安装");
-        resize(560, 460);
+        resize(600, 500);
+        setStyleSheet(
+            "QWidget{background:#101112;color:#e6e7e5;}"
+            "QLabel#title{font-size:22px;font-weight:600;color:#f1f1ed;}"
+            "QLabel#eyebrow{font-size:11px;color:#808485;letter-spacing:1px;}"
+            "QLabel#intro{color:#b7b9b7;line-height:150%;}"
+            "QProgressBar{background:#171819;border:1px solid #303233;border-radius:5px;height:10px;text-align:center;color:#808485;font-size:10px;}"
+            "QProgressBar::chunk{background:#d8dbd4;border-radius:4px;}"
+            "QListWidget{background:#171819;border:1px solid #303233;border-radius:8px;padding:6px;color:#b7b9b7;}"
+            "QCheckBox{color:#b7b9b7;spacing:8px;}"
+            "QPushButton{background:#d8dbd4;color:#151716;border:none;border-radius:8px;padding:10px 18px;font-weight:600;}"
+            "QPushButton:hover{background:#e6e8e2;}"
+            "QPushButton:disabled{background:#262829;color:#808485;}");
         auto* layout = new QVBoxLayout(this);
-        auto* title = new QLabel(g_cfg.label + "（A测版）");
-        title->setStyleSheet("font-size:20px;font-weight:bold;");
+        layout->setContentsMargins(28, 24, 28, 24);
+        layout->setSpacing(12);
+        auto* head = new QHBoxLayout();
+        auto* mark = new QLabel();
+        mark->setPixmap(brandMark(40));
+        auto* titles = new QVBoxLayout();
+        auto* eyebrow = new QLabel("ROGUE INTELLIGENCE · A测版");
+        eyebrow->setObjectName("eyebrow");
+        auto* title = new QLabel(g_cfg.label);
+        title->setObjectName("title");
+        titles->addWidget(eyebrow);
+        titles->addWidget(title);
+        head->addWidget(mark);
+        head->addSpacing(12);
+        head->addLayout(titles, 1);
         auto* intro = new QLabel(
-            "Rogue Intelligence Inc.（Delaware, USA）\n"
-            "一键安装：程序 + 本地小模型（Qwen2.5-0.5B）+ CUDA 运行库，装好即可离线使用。\n"
-            "全部装到 " + g_cfg.target.replace('/', '\\') + "：程序、小模型和各自的数据分开存放。");
+            "一键安装：程序 + 本地小模型（Qwen2.5-0.5B）+ CUDA 运行库，装好即可离线使用，不需要联网和管理员权限。\n"
+            "安装位置 " + QString(g_cfg.target).replace('/', '\\') + "：程序、小模型和各版本数据分开存放，重装不会覆盖你的数据。");
+        intro->setObjectName("intro");
         intro->setWordWrap(true);
         bar_ = new QProgressBar();
         log_ = new QListWidget();
         install_ = new QPushButton("开始安装");
+        install_->setCursor(Qt::PointingHandCursor);
         run_ = new QCheckBox("安装完成后打开 " + g_cfg.label);
         run_->setChecked(true);
-        layout->addWidget(title);
+        layout->addLayout(head);
         layout->addWidget(intro);
         layout->addWidget(bar_);
         layout->addWidget(log_, 1);
-        layout->addWidget(run_);
-        layout->addWidget(install_);
+        auto* foot = new QHBoxLayout();
+        foot->addWidget(run_, 1);
+        foot->addWidget(install_);
+        layout->addLayout(foot);
         connect(install_, &QPushButton::clicked, this, &Window::start);
     }
 
@@ -227,7 +282,7 @@ int main(int argc, char* argv[]) {
     app.setApplicationName("VAL-DAL Setup");
     app.setOrganizationName("Rogue Intelligence");
     loadConfig();
-    QFont font("SimHei");
+    QFont font("Microsoft YaHei UI", 10);
     app.setFont(font);
     CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     Window window;
