@@ -14,6 +14,9 @@ ApplicationWindow {
     visible: true
     title: "VAL-DAL"
     color: win.c.bg
+    font.family: "Inter"
+    font.pixelSize: 12
+    font.hintingPreference: Font.PreferNoHinting
 
     property bool dark: true
     property int page: 0            // 0 chat, 1 workspace, 2 settings (full screen)
@@ -389,7 +392,9 @@ ApplicationWindow {
                                                     RowLayout { spacing: 10; Layout.bottomMargin: 10
                                                         Text { text: md.modelData.user ? t("你", "You") : (md.modelData.path === "web" ? t("联网来源", "Web sources") : t("瓦序", "VAL-DAL")); font.pixelSize: 12; font.weight: Font.DemiBold; color: win.c.text }
                                                         Text { text: md.modelData.time || ""; font.pixelSize: 10; color: win.c.low } }
-                                                    TextEdit { id: msgText; Layout.fillWidth: true; Layout.maximumWidth: 690; text: md.modelData.text; readOnly: true; selectByMouse: true; wrapMode: TextEdit.Wrap
+                                                    TextEdit { id: msgText; Layout.fillWidth: true; Layout.maximumWidth: 690; readOnly: true
+                                                        text: textFormat === TextEdit.MarkdownText ? md.modelData.text.replace(/([^\n])\n(?!\n)/g, "$1  \n") : md.modelData.text; selectByMouse: true; wrapMode: TextEdit.Wrap
+                                                        textFormat: md.modelData.user || md.modelData.path === "web" || md.modelData.error ? TextEdit.PlainText : TextEdit.MarkdownText
                                                         font.pixelSize: md.modelData.path === "web" ? 11 : 13; color: md.modelData.error ? win.c.bad : (md.modelData.path === "web" ? win.c.soft : win.c.text)
                                                         selectionColor: win.c.accent; selectedTextColor: win.c.ink }
                                                     // inline execution record
@@ -468,7 +473,7 @@ ApplicationWindow {
                                             implicitHeight: inSv.height + ctrlRow.implicitHeight + 16
                                             ScrollView { id: inSv; x: 6; y: 6; width: parent.width - 12
                                                 height: Math.min(Math.max(62, input.implicitHeight), Math.max(120, win.height * 0.32))
-                                                TextArea { id: input; wrapMode: TextArea.Wrap; font.pixelSize: 13; font.family: "Microsoft YaHei UI"; color: win.c.strong; leftPadding: 13; rightPadding: 13; topPadding: 12; bottomPadding: 6
+                                                TextArea { id: input; wrapMode: TextArea.Wrap; font.pixelSize: 13; color: win.c.strong; leftPadding: 13; rightPadding: 13; topPadding: 12; bottomPadding: 6
                                                     placeholderText: win.webMode ? t("输入要联网查找的问题…", "Ask something to search the web for…") : t("告诉瓦序你想做什么…", "Tell VAL-DAL what to do…")
                                                     placeholderTextColor: win.c.low; background: Item {}
                                                     Keys.onPressed: function(e) { if ((e.key === Qt.Key_Return || e.key === Qt.Key_Enter) && !(e.modifiers & Qt.ShiftModifier)) { win.doSend(); e.accepted = true } } } }
@@ -657,7 +662,7 @@ ApplicationWindow {
                                     Note { text: bridge.knowledgeStats }
                                     Rectangle { Layout.fillWidth: true; Layout.fillHeight: true; radius: 7; color: win.c.panel; border.color: kbEdit.activeFocus ? win.c.focus : win.c.line2
                                         ScrollView { anchors.fill: parent; anchors.margins: 4
-                                            TextArea { id: kbEdit; font.family: "Microsoft YaHei UI"; text: bridge.knowledgeText; wrapMode: TextArea.Wrap; color: win.c.text; font.pixelSize: 12; placeholderText: t("在此写入语料…", "Write corpus notes here…"); placeholderTextColor: win.c.low; background: Item {} } } }
+                                            TextArea { id: kbEdit; text: bridge.knowledgeText; wrapMode: TextArea.Wrap; color: win.c.text; font.pixelSize: 12; placeholderText: t("在此写入语料…", "Write corpus notes here…"); placeholderTextColor: win.c.low; background: Item {} } } }
                                     RowLayout { Layout.fillWidth: true; Layout.bottomMargin: 22; spacing: 8
                                         TextField { id: kbDomain; placeholderText: t("行业/领域（导入用）", "Domain (for import)"); Layout.preferredWidth: 220 }
                                         Pill { text: t("导入文件", "Import files"); ico: "\uE8B5"; onClicked: kbDlg.open() }

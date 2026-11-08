@@ -10,4 +10,6 @@ if not exist dist mkdir dist
 copy /y build\Release\Valhalla.exe dist\Valhalla.exe >nul || exit /b 1
 "%QT%\bin\windeployqt.exe" --qmldir qml --release --no-translations dist\Valhalla.exe || exit /b 1
 del /q dist\*.pdb 2>nul
+if not exist dist\fonts mkdir dist\fonts
+copy /y ..\brand\fonts\*.ttf dist\fonts\ >nul
 echo Built dist\Valhalla.exe
