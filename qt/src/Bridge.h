@@ -22,6 +22,14 @@ class Bridge : public QObject {
     Q_PROPERTY(QVariantList conversations READ conversations NOTIFY conversationsChanged)
     Q_PROPERTY(QVariantList messages READ messages NOTIFY messagesChanged)
     Q_PROPERTY(QVariantList models READ models NOTIFY modelsChanged)
+    Q_PROPERTY(QString pipelineReport READ pipelineReport NOTIFY pipelineChanged)
+    Q_PROPERTY(bool pipelineBusy READ pipelineBusy NOTIFY pipelineChanged)
+    Q_PROPERTY(QString catalogStatus READ catalogStatus NOTIFY pipelineChanged)
+    Q_PROPERTY(QString currentModelName READ currentModelName NOTIFY pipelineChanged)
+    Q_PROPERTY(bool modelLoaded READ modelLoaded NOTIFY pipelineChanged)
+    Q_PROPERTY(bool enginePresent READ enginePresent NOTIFY pipelineChanged)
+    Q_PROPERTY(bool modelInstalled READ modelInstalled NOTIFY pipelineChanged)
+    Q_PROPERTY(QString computeDevice READ computeDevice NOTIFY pipelineChanged)
     Q_PROPERTY(bool busy READ busy NOTIFY busyChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY statusChanged)
     Q_PROPERTY(QString lang READ lang NOTIFY langChanged)
@@ -53,6 +61,15 @@ public:
     QVariantList conversations() const { return conversations_; }
     QVariantList messages() const { return messages_; }
     QVariantList models() const { return models_; }
+
+    QString pipelineReport() const { return pipeline_report_; }
+    bool pipelineBusy() const { return pipeline_busy_; }
+    QString catalogStatus() const { return catalog_status_; }
+    QString currentModelName() const { return QString::fromStdString(settings_.model_repo); }
+    bool modelLoaded() const { return warm_weights_resident(); }
+    bool enginePresent() const { return !find_binary().empty(); }
+    bool modelInstalled() const { return weights_present(model_directory(settings_.model_repo)); }
+    QString computeDevice() const { const QString g = QString::fromStdWString(gpu_status()); return g.isEmpty() ? QStringLiteral("—") : g; }
     bool busy() const { return busy_; }
     QString statusText() const { return status_; }
     QString lang() const { return lang_; }
@@ -65,7 +82,7 @@ public:
     QString knowledgeText() const { return QString::fromStdString(settings_.knowledge); }
     QString knowledgeStats() const;
     QString runtimeText() const;
-    QString screenText() const { return QString::fromStdWString(reading_.text); }
+    QString screenText() const { const QString s = QString::fromStdWString(reading_.text); return s.isEmpty() ? ocr_import_text_ : s; }
     QString screenMeta() const;
     QString chatTitle() const;
     QString lastPath() const { return last_path_; }
@@ -77,6 +94,8 @@ public:
     QString envReport();
     bool envDismissed();
 
+    Q_INVOKABLE void repairPipeline();
+    Q_INVOKABLE void updateModelCatalog();
     Q_INVOKABLE void claimWindow();
     Q_INVOKABLE void send(const QString& text);
     Q_INVOKABLE void newChat();
@@ -92,6 +111,8 @@ public:
     Q_INVOKABLE void setTaskMode(bool value);
     Q_INVOKABLE void setLanguage(int index);
     Q_INVOKABLE void recognize();
+    Q_INVOKABLE void ocrImport(const QVariantList& urls);
+    Q_INVOKABLE void retryLast();
     Q_INVOKABLE void probe();
     Q_INVOKABLE void speakText(const QString& text);
     Q_INVOKABLE void stopSpeak();
@@ -104,6 +125,7 @@ signals:
     void conversationsChanged();
     void messagesChanged();
     void modelsChanged();
+    void pipelineChanged();
     void busyChanged();
     void statusChanged();
     void langChanged();
@@ -119,6 +141,7 @@ private:
         bool user = false;
         QString text;
         QString path;
+        bool error = false;
     };
 
     QString L(const char* zh, const char* en) const { return lang_ == "zh" ? QString::fromUtf8(zh) : QString::fromUtf8(en); }
@@ -133,6 +156,9 @@ private:
     void saveSettings();
     std::wstring dataFile(const wchar_t* name) const;
 
+    QString pipeline_report_;
+    QString catalog_status_;
+    bool pipeline_busy_ = false;
     std::wstring data_dir_;
     std::wstring settings_path_;
     std::wstring kb_path_;
@@ -154,6 +180,8 @@ private:
     QString framework_note_;
     QString probe_text_;
     QString last_path_;
+    QString last_question_;
+    QString ocr_import_text_;
     QString search_;
     QString lang_ = "zh";
     double last_seconds_ = -1;

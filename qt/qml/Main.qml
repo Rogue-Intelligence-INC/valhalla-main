@@ -70,11 +70,6 @@ ApplicationWindow {
         store.plan = parts[1]; store.code = code
         win.cdkMsg = t("\u5151\u6362\u6210\u529f\uff0c\u5df2\u5f00\u901a ", "Redeemed: ") + win.cdkPlanName(parts[1])
     }
-    function strategyName(i) {
-        var zh = ["忠实检索", "选择题混合解码", "追问会话", "多跳"]
-        var en = ["Faithful retrieval", "Hybrid multiple choice", "Follow-up session", "Multi-hop"]
-        return (bridge.lang === "zh" ? zh : en)[i]
-    }
     function currentModelLabel() {
         for (var i = 0; i < bridge.models.length; i++)
             if (bridge.models[i].current) return bridge.models[i].label
@@ -100,16 +95,49 @@ ApplicationWindow {
         implicitHeight: 32
         contentItem: Text {
             text: gb.text
-            color: gb.active ? win.primaryInk : (gb.hovered ? win.ink : win.muted)
+            color: gb.active ? win.primaryInk : (gb.hovered || gb.pressed ? win.ink : win.muted)
             font.pixelSize: 12
             horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }
         background: Rectangle {
-            radius: 16
-            color: gb.active ? win.accent : (gb.hovered ? win.cardHi : win.card)
-            border.color: win.line
+            radius: 9
+            color: gb.active ? win.accent : (gb.pressed ? win.cardHi : (gb.hovered ? win.cardHi : win.card))
+            border.color: gb.active ? win.accent : win.line
+            opacity: gb.enabled ? 1 : 0.45
         }
+    }
+    component PrimaryButton: Button {
+        id: pb
+        implicitHeight: 36
+        contentItem: Text { text: pb.text; color: win.primaryInk; font.pixelSize: 13; font.weight: Font.DemiBold; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+        background: Rectangle { radius: 9; color: pb.pressed ? win.cardHi : win.primaryBg; opacity: pb.enabled ? (pb.hovered ? 0.88 : 1) : 0.45; border.color: win.primaryBg }
+    }
+    component DangerButton: Button {
+        id: db
+        implicitHeight: 32
+        contentItem: Text { text: db.text; color: "#ffffff"; font.pixelSize: 12; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+        background: Rectangle { radius: 9; color: db.pressed ? "#8f2d2d" : (db.hovered ? "#b23a3a" : "#9e3434"); opacity: db.enabled ? 1 : 0.45 }
+    }
+    // Dot-matrix signal row: lit dots = active/ok, dim = standby/weak
+    component SignalDots: RowLayout {
+        property int lit: 0
+        property int total: 5
+        property string caption: ""
+        spacing: 5
+        Repeater {
+            model: total
+            delegate: Rectangle { required property int index; width: 8; height: 8; radius: 4; color: index < lit ? win.flash : win.line; opacity: index < lit ? 1 : 0.55 }
+        }
+        Text { text: caption; color: muted; font.pixelSize: 11; Layout.leftMargin: 4 }
+    }
+    function pipelineLit() {
+        if (!bridge.busy) return bridge.lastPath !== "" ? 5 : 2
+        return 3
+    }
+    function pipelineStage() {
+        if (bridge.busy) return t("理解 → 检索 → 组织 → 回答（处理中）", "Understand → Retrieve → Organize → Answer (working)")
+        return bridge.lastPath !== "" ? (t("已完成 · ", "Done · ") + bridge.lastPath) : t("待机", "Standby")
     }
 
     component KV: RowLayout {
@@ -162,15 +190,6 @@ ApplicationWindow {
                         Text { text: t("本地智能体", "Local agent"); color: muted; font.pixelSize: 10 }
                     }
                     Item { Layout.fillWidth: true }
-                    Rectangle {
-                        radius: 8
-                        color: themeBtn.hovered ? cardHi : card
-                        border.color: line
-                        implicitWidth: 46
-                        implicitHeight: 24
-                        Text { anchors.centerIn: parent; text: win.light ? t("黑", "Dark") : t("白", "Light"); color: muted; font.pixelSize: 11 }
-                        MouseArea { id: themeBtn; anchors.fill: parent; hoverEnabled: true; onClicked: win.light = !win.light }
-                    }
                 }
 
                 Button {
@@ -246,65 +265,7 @@ ApplicationWindow {
                     }
                 }
 
-                Text { text: t("快捷入口", "Shortcuts"); color: muted; font.pixelSize: 11 }
-                ColumnLayout {
-                    spacing: 2
-                    Layout.fillWidth: true
-                    Repeater {
-                        model: [
-                            { "label": t("知识库", "Knowledge"), "sec": 0 },
-                            { "label": t("模型", "Models"), "sec": 1 },
-                            { "label": t("综合", "General"), "sec": 2 },
-                            { "label": t("桌面", "Desktop"), "sec": 3 }
-                        ]
-                        delegate: Button {
-                            required property var modelData
-                            Layout.fillWidth: true
-                            implicitHeight: 32
-                            text: modelData.label
-                            onClicked: { win.settingsSection = modelData.sec; win.showSettings = true }
-                            contentItem: Text {
-                                text: parent.text; color: parent.hovered ? win.ink : win.muted; font.pixelSize: 12
-                                verticalAlignment: Text.AlignVCenter; leftPadding: 10
-                            }
-                            background: Rectangle { radius: 8; color: parent.hovered ? win.cardHi : "transparent" }
-                        }
-                    }
-                }
 
-                Rectangle { Layout.fillWidth: true; height: 1; color: line }
-
-                ColumnLayout {
-                    spacing: 3
-                    KV { name: t("屏幕", "Screen"); value: bridge.screenMeta.split(" · ")[0] || "" }
-                    KV { name: "OCR"; value: bridge.screenMeta }
-                    KV { name: t("控制", "Control"); value: bridge.allowControl ? t("开", "On") : t("关", "Off") }
-                }
-
-                Button {
-                    Layout.fillWidth: true
-                    implicitHeight: 36
-                    text: "⚙"
-                    onClicked: win.showSettings = true
-                    contentItem: Text {
-                        text: parent.text; color: parent.hovered ? ink : muted; font.pixelSize: 16
-                        horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter
-                    }
-                    background: Rectangle { radius: 9; color: parent.hovered ? cardHi : "transparent" }
-                    ToolTip.visible: hovered
-                    ToolTip.text: t("设置", "Settings")
-                }
-                Button {
-                    Layout.fillWidth: true
-                    implicitHeight: 36
-                    text: t("关于瓦序", "About")
-                    onClicked: aboutDialog.open()
-                    contentItem: Text {
-                        text: parent.text; color: parent.hovered ? ink : muted; font.pixelSize: 13
-                        verticalAlignment: Text.AlignVCenter; leftPadding: 4
-                    }
-                    background: Rectangle { radius: 9; color: parent.hovered ? cardHi : "transparent" }
-                }
             }
         }
 
@@ -333,29 +294,21 @@ ApplicationWindow {
                     Layout.maximumWidth: 420
                 }
                 Item { Layout.fillWidth: true }
-                ComboBox {
-                    model: [strategyName(0), strategyName(1), strategyName(2), strategyName(3)]
-                    currentIndex: bridge.strategyIndex
-                    onActivated: (i) => bridge.setStrategy(i)
-                    implicitWidth: 168
-                    implicitHeight: 32
-                    contentItem: Text {
-                        text: parent.displayText; color: ink; font.pixelSize: 12
-                        verticalAlignment: Text.AlignVCenter; leftPadding: 10; elide: Text.ElideRight
-                    }
-                    background: Rectangle { radius: 9; color: card; border.color: line }
-                    popup.background: Rectangle { color: cardHi; radius: 9; border.color: line }
-                    delegate: ItemDelegate {
-                        required property var modelData
-                        width: parent ? parent.width : 160
-                        contentItem: Text { text: modelData; color: ink; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter }
-                        background: Rectangle { color: hovered ? card : "transparent" }
-                    }
-                }
+                Rectangle { radius: 8; color: card; border.color: line; implicitWidth: modeLabel.width + 16; implicitHeight: 24
+                    Text { id: modeLabel; anchors.centerIn: parent; text: "Valhalla " + t("模式", "Mode"); color: muted; font.pixelSize: 11; font.weight: Font.DemiBold } }
                 GhostButton {
-                    text: t("设置", "Settings")
-                    implicitWidth: 64
-                    onClicked: win.showSettings = true
+                    text: win.light ? t("黑", "Dark") : t("白", "Light")
+                    implicitWidth: 52
+                    onClicked: win.light = !win.light
+                }
+                Button {
+                    id: gearTop
+                    implicitWidth: 36; implicitHeight: 32
+                    text: "⚙"
+                    onClicked: { win.settingsSection = 0; win.showSettings = true }
+                    contentItem: Text { text: parent.text; color: parent.hovered ? ink : muted; font.pixelSize: 16; horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                    background: Rectangle { radius: 9; color: parent.hovered ? cardHi : card; border.color: line }
+                    ToolTip.visible: hovered; ToolTip.text: t("设置", "Settings")
                 }
                 GhostButton {
                     text: win.panelOpen ? t("隐藏右栏", "Hide panel") : t("显示右栏", "Show panel")
@@ -454,6 +407,13 @@ ApplicationWindow {
                                     implicitHeight: 26
                                     onClicked: bridge.speakText(modelData.text)
                                 }
+                                GhostButton {
+                                    visible: modelData.error === true
+                                    text: t("重试", "Retry")
+                                    implicitHeight: 26
+                                    enabled: !bridge.busy
+                                    onClicked: bridge.retryLast()
+                                }
                             }
                             Text {
                                 visible: modelData.path !== ""
@@ -475,7 +435,7 @@ ApplicationWindow {
                         spacing: 8
                         Text { text: "\u74e6\u5e8f VAL-DAL"; color: muted; font.pixelSize: 11; font.weight: Font.DemiBold }
                         Text {
-                            text: t("正在回答…", "Answering…")
+                            text: win.pipelineStage()
                             color: muted
                             font.pixelSize: 13
                             SequentialAnimation on opacity {
@@ -514,6 +474,7 @@ ApplicationWindow {
                         font.pixelSize: 14
                         Layout.alignment: Qt.AlignHCenter
                     }
+                    SignalDots { lit: bridge.enginePresent ? 4 : 1; caption: "Valhalla " + t("管线", "pipeline"); Layout.alignment: Qt.AlignHCenter }
                     Text {
                         text: t("快捷入口", "Quick actions")
                         color: muted
@@ -530,9 +491,9 @@ ApplicationWindow {
                         Repeater {
                             model: [
                                 { "title": t("识别屏幕", "Recognize screen"), "sub": t("把当前屏幕带入对话", "Bring the screen into the chat"), "act": 0 },
-                                { "title": t("知识库", "Knowledge"), "sub": t("语料与行业资料导入", "Notes and industry import"), "act": 1 },
-                                { "title": t("模型", "Models"), "sub": t("下载与切换解码模型", "Download and switch models"), "act": 2 },
-                                { "title": t("桌面控制", "Desktop control"), "sub": t("OCR 结果与控制开关", "OCR result and control switch"), "act": 3 }
+                                { "title": t("OCR 导入", "OCR import"), "sub": t("导入图片并识别文字", "Import an image and OCR it"), "act": 4 },
+                                { "title": t("电脑控制", "Computer control"), "sub": t("在下方对话框开关中开启", "Toggle it in the composer below"), "act": 3 },
+                                { "title": "Valhalla " + t("模式", "Mode"), "sub": t("固定混合管线，不可切换", "Fixed hybrid pipeline"), "act": 5 }
                             ]
                             delegate: Rectangle {
                                 required property var modelData
@@ -553,7 +514,8 @@ ApplicationWindow {
                                     anchors.fill: parent
                                     onClicked: {
                                         if (modelData.act === 0) bridge.recognize()
-                                        else { win.settingsSection = modelData.act === 1 ? 0 : (modelData.act === 2 ? 1 : 3); win.showSettings = true }
+                                        else if (modelData.act === 4) ocrImportDialog.open()
+                                        else if (modelData.act === 3) bridge.setAllowControl(!bridge.allowControl)
                                     }
                                 }
                             }
@@ -615,6 +577,17 @@ ApplicationWindow {
                         anchors.margins: 10
                         spacing: 8
 
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 6
+                            Rectangle { radius: 7; color: cardHi; border.color: line; implicitWidth: vmLabel.width + 12; implicitHeight: 20
+                                Text { id: vmLabel; anchors.centerIn: parent; text: "Valhalla " + t("模式", "Mode"); color: muted; font.pixelSize: 10; font.weight: Font.DemiBold } }
+                            GhostButton { text: t("识别屏幕", "Recognize screen"); implicitHeight: 26; enabled: !bridge.busy; onClicked: bridge.recognize() }
+                            GhostButton { text: t("OCR 导入", "OCR import"); implicitHeight: 26; enabled: !bridge.busy; onClicked: ocrImportDialog.open() }
+                            GhostButton { text: t("电脑控制", "Computer control"); implicitHeight: 26; active: bridge.allowControl; onClicked: bridge.setAllowControl(!bridge.allowControl) }
+                            Item { Layout.fillWidth: true }
+                            Text { text: bridge.busy ? win.pipelineStage() : ""; color: muted; font.pixelSize: 10; elide: Text.ElideRight; Layout.maximumWidth: 260 }
+                        }
                         TextArea {
                             id: composer
                             Layout.fillWidth: true
@@ -636,15 +609,6 @@ ApplicationWindow {
                         RowLayout {
                             Layout.fillWidth: true
                             spacing: 8
-                            GhostButton {
-                                text: t("识别屏幕", "Recognize")
-                                onClicked: bridge.recognize()
-                            }
-                            GhostButton {
-                                text: t("控制电脑", "Control")
-                                active: bridge.allowControl
-                                onClicked: bridge.setAllowControl(!bridge.allowControl)
-                            }
                             GhostButton {
                                 text: t("任务布置", "Task")
                                 active: bridge.taskMode
@@ -702,20 +666,8 @@ ApplicationWindow {
                         Layout.fillWidth: true
                     }
                     Text { text: t("设置", "Settings"); color: ink; font.pixelSize: 17; font.weight: Font.DemiBold; Layout.topMargin: 8; Layout.bottomMargin: 6 }
-                    Button {
-                        Layout.fillWidth: true
-                        implicitHeight: 38
-                        onClicked: buyDialog.open()
-                        contentItem: Text {
-                            text: "⚡ " + t("官方在线大模型", "Official online model") + (store.plan === "" ? "" : " · " + win.cdkPlanName(store.plan))
-                            color: flash; font.pixelSize: 13; font.weight: Font.DemiBold
-                            verticalAlignment: Text.AlignVCenter; leftPadding: 10
-                        }
-                        background: Rectangle { radius: 9; color: parent.hovered ? cardHi : card; border.color: flash }
-                    }
-
                     Repeater {
-                        model: [t("知识库", "Knowledge"), t("模型", "Models"), t("综合", "General"), t("桌面", "Desktop")]
+                        model: [t("Valhalla 管线", "Valhalla pipeline"), t("模型与下载", "Models & download"), t("在线大模型", "Online model"), t("知识库", "Knowledge"), t("外观与语言", "Appearance & language"), t("数据与关于", "Data & about")]
                         delegate: Button {
                             required property int index
                             required property string modelData
@@ -745,9 +697,29 @@ ApplicationWindow {
             StackLayout {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                currentIndex: win.settingsSection
+                currentIndex: win.settingsSection === 1 ? 2 : win.settingsSection === 2 ? 3 : win.settingsSection === 3 ? 1 : win.settingsSection
 
-                // Knowledge
+
+                // Pipeline (section 0)
+                Item {
+                ColumnLayout {
+                    anchors.fill: parent; anchors.margins: 22; spacing: 12
+                    Text { text: t("Valhalla 管线", "Valhalla pipeline"); color: ink; font.pixelSize: 18; font.weight: Font.DemiBold }
+                    SignalDots { lit: bridge.enginePresent ? (bridge.busy ? 3 : 5) : 1; caption: win.pipelineStage() }
+                    Text { text: t("修复 / 初始化会自检引擎（含 .enc）、CUDA 与模型，清模型解密缓存、停 warm 进程、重新预热并跑 feature check。异步执行，不卡界面。", "Repair/init checks the engine (incl. .enc), CUDA and model, clears the decrypt cache, stops warm, re-warms and runs the feature check. Async."); color: muted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    RowLayout { spacing: 8
+                        PrimaryButton { text: bridge.pipelineBusy ? t("处理中…", "Working...") : t("修复 / 初始化 Valhalla 管线", "Repair / initialize Valhalla pipeline"); enabled: !bridge.pipelineBusy && !bridge.busy; implicitWidth: 240; onClicked: bridge.repairPipeline() }
+                        GhostButton { text: t("检查运行时", "Probe runtime"); enabled: !bridge.busy; onClicked: bridge.probe() }
+                        GhostButton { text: t("一键配置环境", "Set up environment"); enabled: !bridge.envReady; onClicked: bridge.setupEnvironment() }
+                    }
+                    Text { text: t("管线报告", "Pipeline report"); color: muted; font.pixelSize: 12 }
+                    ScrollView { Layout.fillWidth: true; Layout.fillHeight: true
+                        TextArea { text: bridge.pipelineReport === "" ? bridge.envReport : bridge.pipelineReport; readOnly: true; color: ink; font.pixelSize: 12; wrapMode: Text.Wrap; background: Rectangle { color: card; radius: 12; border.color: line } } }
+                    Text { text: bridge.runtimeText; color: muted; font.pixelSize: 11; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
+                }
+                }
+
+                // Knowledge (section 3, stack index shifted by pipeline+online inserts below)
                 Item {
                 ColumnLayout {
                     anchors.fill: parent
@@ -804,7 +776,11 @@ ApplicationWindow {
                         width: parent.width
                         spacing: 10
                         Text { text: t("模型", "Models"); color: ink; font.pixelSize: 18; font.weight: Font.DemiBold; Layout.leftMargin: 22; Layout.topMargin: 22 }
-                        Text { text: t("只列出本机解码器能加载的免费 Qwen2.5 Instruct。", "Free Qwen2.5 Instruct checkpoints this decoder can load."); color: muted; font.pixelSize: 12; Layout.leftMargin: 22 }
+                        RowLayout { Layout.leftMargin: 22; Layout.rightMargin: 22; spacing: 8
+                            Text { text: t("瓦序 VAL-DAL · Valhalla 管线可选解码头（下载仍走本地下载通道）", "VAL-DAL · optional decode heads for the Valhalla pipeline"); color: muted; font.pixelSize: 12; Layout.fillWidth: true; wrapMode: Text.Wrap }
+                            GhostButton { text: t("更新列表", "Update list"); enabled: !bridge.busy; onClicked: bridge.updateModelCatalog() }
+                        }
+                        Text { text: bridge.catalogStatus; color: muted; font.pixelSize: 11; Layout.leftMargin: 22 }
                         Repeater {
                             model: bridge.models
                             delegate: Rectangle {
@@ -825,7 +801,7 @@ ApplicationWindow {
                                         spacing: 3
                                         Layout.fillWidth: true
                                         Text {
-                                            text: modelData.label + "   ·   " + modelData.size + "   ·   " + (modelData.installed ? t("已安装", "Installed") : t("未下载", "Not downloaded")) + (modelData.current ? "   ·   " + t("当前", "In use") : "")
+                                            text: modelData.family + " · " + modelData.label + "   ·   " + modelData.size + "   ·   " + (modelData.installed ? t("已安装", "Installed") : t("未下载", "Not downloaded")) + (modelData.current ? "   ·   " + t("当前", "In use") : "")
                                             color: ink; font.pixelSize: 14; font.weight: Font.DemiBold
                                         }
                                         Text { text: modelData.note; color: muted; font.pixelSize: 12; wrapMode: Text.Wrap; Layout.fillWidth: true }
@@ -847,13 +823,26 @@ ApplicationWindow {
                     }
                 }
 
-                // General
+
+                // Online model (section 2)
+                Item {
+                ColumnLayout {
+                    anchors.fill: parent; anchors.margins: 22; spacing: 12
+                    Text { text: t("在线大模型", "Online model"); color: ink; font.pixelSize: 18; font.weight: Font.DemiBold }
+                    SignalDots { lit: store.plan === "" ? 1 : 5; total: 5; caption: store.plan === "" ? t("未配置（本地版可离线使用）", "Not configured (local works offline)") : (t("已配置：", "Configured: ") + win.cdkPlanName(store.plan)) }
+                    Text { text: store.plan === "" ? t("当前未开通在线版。购买/CDK 兑换后显示已配置。", "Online edition not active. It shows as configured after CDK redemption.") : (t("已开通：", "Active: ") + win.cdkPlanName(store.plan)); color: ink; font.pixelSize: 13; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    PrimaryButton { text: t("购买 / 兑换 CDK", "Buy / Redeem CDK"); implicitWidth: 200; onClicked: buyDialog.open() }
+                    Item { Layout.fillHeight: true }
+                }
+                }
+
+                // Appearance & language (was General)
                 Item {
                 ColumnLayout {
                     anchors.fill: parent
                     anchors.margins: 22
                     spacing: 12
-                    Text { text: t("综合", "General"); color: ink; font.pixelSize: 18; font.weight: Font.DemiBold }
+                    Text { text: t("外观与语言", "Appearance & language"); color: ink; font.pixelSize: 18; font.weight: Font.DemiBold }
 
                     Rectangle {
                         Layout.fillWidth: true
@@ -906,23 +895,10 @@ ApplicationWindow {
                             background: Rectangle { color: hovered ? card : "transparent" }
                         }
                     }
-                    Text { text: t("回答策略", "Answer strategy"); color: muted; font.pixelSize: 12 }
-                    ComboBox {
-                        model: [strategyName(0), strategyName(1), strategyName(2), strategyName(3)]
-                        currentIndex: bridge.strategyIndex
-                        onActivated: (i) => bridge.setStrategy(i)
-                        implicitWidth: 320
-                        contentItem: Text { text: parent.displayText; color: ink; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter; leftPadding: 10 }
-                        background: Rectangle { radius: 9; color: card; border.color: line }
-                        popup.background: Rectangle { color: cardHi; radius: 9; border.color: line }
-                        delegate: ItemDelegate {
-                            required property var modelData
-                            width: parent ? parent.width : 300
-                            contentItem: Text { text: modelData; color: ink; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter }
-                            background: Rectangle { color: hovered ? card : "transparent" }
-                        }
+                    RowLayout { spacing: 10
+                        Text { text: t("主题", "Theme"); color: ink; font.pixelSize: 13 }
+                        GhostButton { text: win.light ? t("白色（当前）· 切到黑色", "Light (current) · Dark") : t("黑色（当前）· 切到白色", "Dark (current) · Light"); onClicked: win.light = !win.light }
                     }
-                    Text { text: bridge.strategyDelta; color: ink; font.pixelSize: 12 }
                     RowLayout {
                         spacing: 10
                         Switch {
@@ -949,7 +925,12 @@ ApplicationWindow {
                     anchors.fill: parent
                     anchors.margins: 22
                     spacing: 12
-                    Text { text: t("屏幕与控制", "Screen and control"); color: ink; font.pixelSize: 18; font.weight: Font.DemiBold }
+                    Text { text: t("数据与关于", "Data & about"); color: ink; font.pixelSize: 18; font.weight: Font.DemiBold }
+                    RowLayout { spacing: 8
+                        GhostButton { text: t("关于瓦序", "About VAL-DAL"); onClicked: aboutDialog.open() }
+                        Text { text: "Rogue Intelligence Inc. · Delaware, USA"; color: muted; font.pixelSize: 11 }
+                    }
+                    Text { text: t("屏幕与控制", "Screen and control"); color: ink; font.pixelSize: 14; font.weight: Font.DemiBold }
                     Text {
                         text: t("识别会暂时让出窗口，截取当前桌面，用 Windows OCR 读出文字，并列出控件坐标。计算机控制默认关闭，打开后才会执行点击、输入和按键。",
                                 "Recognize steps aside, captures the desktop, reads it with Windows OCR, and lists control coordinates. Computer control stays off until you turn it on.")
@@ -1038,88 +1019,30 @@ ApplicationWindow {
                     }
 
                     ColumnLayout {
-                        Layout.leftMargin: 16
-                        Layout.rightMargin: 16
-                        spacing: 7
-                        KV { name: t("策略", "Strategy"); value: strategyName(bridge.strategyIndex) }
-                        KV { name: t("模型", "Model"); value: currentModelLabel() }
-                        KV { name: t("会话续接", "Session"); value: bridge.keepSession ? t("开", "On") : t("关", "Off") }
+                        Layout.leftMargin: 16; Layout.rightMargin: 16; spacing: 7
+                        Text { text: t("Valhalla 管线", "Valhalla pipeline"); color: ink; font.pixelSize: 12; font.weight: Font.DemiBold }
+                        SignalDots { lit: win.pipelineLit(); caption: bridge.busy ? t("处理中", "Working") : (bridge.lastPath !== "" ? t("已输出", "Done") : t("待机", "Standby")) }
+                        Text { text: t("输入 → 结构检索 → Fate 路由 → 本地解码 → 输出", "Input → Retrieval → Fate routing → Local decode → Output"); color: muted; font.pixelSize: 10; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                        Text { text: win.pipelineStage(); color: muted; font.pixelSize: 10; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                    }
+                    ColumnLayout {
+                        Layout.leftMargin: 16; Layout.rightMargin: 16; spacing: 7
+                        Text { text: t("模型状态（本地）", "Model (local)"); color: ink; font.pixelSize: 12; font.weight: Font.DemiBold }
+                        SignalDots { lit: bridge.modelLoaded ? 5 : (bridge.modelInstalled ? 3 : 1); caption: bridge.modelLoaded ? t("已加载", "Loaded") : (bridge.modelInstalled ? t("已下载·未常驻", "Downloaded · not resident") : t("未下载", "Not downloaded")) }
+                        KV { name: t("当前模型", "Model"); value: win.currentModelLabel() }
+                        KV { name: t("已加载", "Resident"); value: bridge.modelLoaded ? t("是", "Yes") : t("否", "No") }
+                        KV { name: "GPU/CPU"; value: bridge.computeDevice }
                         KV { name: t("轮次", "Turns"); value: String(bridge.turnCount) }
                         KV { name: t("耗时", "Elapsed"); value: bridge.lastElapsed }
                     }
-
-                    Text {
-                        text: t("知识", "Knowledge")
-                        color: muted; font.pixelSize: 11
-                        Layout.leftMargin: 16
-                    }
-                    Text {
-                        text: bridge.knowledgeStats
-                        color: ink; font.pixelSize: 12
-                        wrapMode: Text.Wrap
-                        Layout.leftMargin: 16
-                        Layout.rightMargin: 16
-                        Layout.fillWidth: true
-                    }
-
-                    Text {
-                        text: t("最近解码", "Last decode")
-                        color: muted; font.pixelSize: 11
-                        Layout.leftMargin: 16
-                    }
-                    Text {
-                        text: bridge.lastBadge === "" ? t("暂无", "None") : bridge.lastBadge
-                        color: ink; font.pixelSize: 12
-                        Layout.leftMargin: 16
-                    }
-                    Text {
-                        text: bridge.lastPath
-                        visible: text !== ""
-                        color: muted; font.pixelSize: 10; font.family: "Cascadia Mono"
-                        wrapMode: Text.WrapAnywhere
-                        Layout.leftMargin: 16
-                        Layout.rightMargin: 16
-                        Layout.fillWidth: true
-                    }
-
-                    Text {
-                        text: t("运行时", "Runtime")
-                        color: muted; font.pixelSize: 11
-                        Layout.leftMargin: 16
-                    }
-                    Text {
-                        text: bridge.runtimeText
-                        color: muted; font.pixelSize: 11
-                        wrapMode: Text.WrapAnywhere
-                        Layout.leftMargin: 16
-                        Layout.rightMargin: 16
-                        Layout.fillWidth: true
-                    }
-
-                    Rectangle { Layout.fillWidth: true; height: 1; color: line; Layout.leftMargin: 16; Layout.rightMargin: 16 }
-
-                    Text {
-                        text: t("屏幕", "Screen")
-                        color: muted; font.pixelSize: 11
-                        Layout.leftMargin: 16
-                    }
-                    Text {
-                        text: bridge.screenMeta
-                        color: ink; font.pixelSize: 12
-                        wrapMode: Text.Wrap
-                        Layout.leftMargin: 16
-                        Layout.rightMargin: 16
-                        Layout.fillWidth: true
-                    }
-                    RowLayout {
-                        Layout.leftMargin: 16
-                        spacing: 8
-                        GhostButton { text: t("识别", "Recognize"); onClicked: bridge.recognize() }
-                        GhostButton {
-                            text: bridge.allowControl ? t("控制开", "Control on") : t("允许控制", "Allow control")
-                            active: bridge.allowControl
-                            onClicked: bridge.setAllowControl(!bridge.allowControl)
-                        }
+                    ColumnLayout {
+                        Layout.leftMargin: 16; Layout.rightMargin: 16; spacing: 7
+                        Text { text: t("连接状态", "Connection"); color: ink; font.pixelSize: 12; font.weight: Font.DemiBold }
+                        SignalDots { lit: (bridge.enginePresent ? 2 : 0) + (store.plan === "" ? 1 : 3); caption: bridge.enginePresent ? t("引擎在", "Engine present") : t("引擎不在", "Engine missing") }
+                        KV { name: t("引擎进程", "Engine"); value: bridge.enginePresent ? t("在", "Present") : t("不在", "Missing") }
+                        KV { name: t("在线大模型", "Online model"); value: store.plan === "" ? t("未配置", "Not configured") : win.cdkPlanName(store.plan) }
+                        KV { name: t("屏幕", "Screen"); value: bridge.screenMeta }
+                        KV { name: t("控制", "Control"); value: bridge.allowControl ? t("开", "On") : t("关", "Off") }
                     }
                     Item { height: 12 }
                 }
@@ -1352,6 +1275,13 @@ ApplicationWindow {
         }
     }
 
+    FileDialog {
+        id: ocrImportDialog
+        title: t("OCR 导入", "OCR import")
+        fileMode: FileDialog.OpenFiles
+        nameFilters: ["Images (*.png *.jpg *.jpeg *.bmp *.webp)", "All files (*)"]
+        onAccepted: bridge.ocrImport(selectedFiles)
+    }
     FileDialog {
         id: importDialog
         title: t("导入行业资料", "Import industry files")

@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Quick QuickControls2 Network)
 qt_standard_project_setup(REQUIRES 6.5)
 qt_policy(SET QTP0004 NEW)
 
@@ -54,6 +54,7 @@ target_compile_definitions(Valhalla PRIVATE UNICODE _UNICODE NOMINMAX _CRT_SECUR
 target_link_libraries(Valhalla PRIVATE
     Qt6::Quick
     Qt6::QuickControls2
+    Qt6::Network
     user32 gdi32 advapi32 kernel32 dwmapi gdiplus comctl32 winhttp uxtheme shlwapi
     ole32 oleaut32 shell32 comdlg32 uuid UIAutomationCore windowsapp bcrypt
 )

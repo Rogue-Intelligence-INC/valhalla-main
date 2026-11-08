@@ -4,6 +4,8 @@
 #include "valkey.h"
 
 #include <nlohmann/json.hpp>
+#include <filesystem>
+#include <system_error>
 
 #include <windows.h>
 #include <winhttp.h>
@@ -1246,6 +1248,22 @@ void stop_warm_process() {
     stop_warm_locked();
 }
 
+bool warm_process_alive() {
+    std::lock_guard<std::mutex> lock(g_warm_mu);
+    return warm_alive();
+}
+bool warm_weights_resident() {
+    std::lock_guard<std::mutex> lock(g_warm_mu);
+    return warm_alive() && g_warm.weights_resident;
+}
+std::wstring models_root_path() { return models_root(); }
+bool clear_model_decrypt_cache(std::wstring& error) {
+    const std::wstring cache = models_root() + L"\\.cache";
+    std::error_code ec;
+    std::filesystem::remove_all(std::filesystem::path(cache), ec);
+    if (ec) { error = L"clear cache failed: " + utf8_to_wide(ec.message()); return false; }
+    return true;
+}
 std::wstring gpu_status() {
     std::lock_guard<std::mutex> lock(g_warm_mu);
     return g_gpu_note;

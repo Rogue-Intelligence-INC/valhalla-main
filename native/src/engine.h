@@ -55,6 +55,10 @@ TurnResult run_chat(
     bool allow_control);
 
 void stop_warm_process();
+bool warm_process_alive();
+bool warm_weights_resident();
+std::wstring models_root_path();
+bool clear_model_decrypt_cache(std::wstring& error);
 std::wstring ensure_framework(const std::wstring& model_dir);
 std::wstring gpu_status();
 

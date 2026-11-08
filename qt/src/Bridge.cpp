@@ -1,11 +1,22 @@
-﻿#include "Bridge.h"
+#include <algorithm>
+#include <QVector>
+#include "Bridge.h"
 
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFile>
+#include <QNetworkRequest>
+#include <QNetworkReply>
+#include <QNetworkAccessManager>
+#include <QJsonObject>
+#include <QJsonDocument>
+#include <QJsonArray>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QImage>
+#include <QRegularExpression>
+#include "ocr.h"
 #include <QUrl>
 #include <QWindow>
 
@@ -105,6 +116,21 @@ QString findCudaInstaller() {
     return {};
 }
 }  // namespace
+
+
+namespace {
+// Built-in model catalog (JSON). Remote update replaces it via data/models_catalog_cache.json.
+// TODO: formal catalog URL to be decided by Rogue Intelligence (placeholder below).
+const char* kCatalogUrl = "https://example.com/valdal/models_catalog.json"; // placeholder, formal address TBD
+const char* kBuiltinCatalog = R"JSON([{"repo":"Qwen/Qwen2.5-0.5B-Instruct","label":"Qwen2.5 0.5B","family":"Qwen","paramsB":0.5,"size":"约 1 GB"},{"repo":"Qwen/Qwen2.5-1.5B-Instruct","label":"Qwen2.5 1.5B","family":"Qwen","paramsB":1.5,"size":"约 3 GB"},{"repo":"Qwen/Qwen2.5-3B-Instruct","label":"Qwen2.5 3B","family":"Qwen","paramsB":3,"size":"约 6 GB"},{"repo":"Qwen/Qwen2.5-7B-Instruct","label":"Qwen2.5 7B","family":"Qwen","paramsB":7,"size":"约 15 GB"},{"repo":"mistralai/Mistral-7B-Instruct-v0.3","label":"Mistral 7B Instruct","family":"Mistral","paramsB":7,"size":"约 14 GB"},{"repo":"mistralai/Mistral-Nemo-Instruct-2407","label":"Mistral Nemo 12B","family":"Mistral","paramsB":12,"size":"约 24 GB"},{"repo":"mistralai/Mistral-Small-24B-Instruct-2501","label":"Mistral Small 24B","family":"Mistral","paramsB":24,"size":"约 48 GB"},{"repo":"meta-llama/Llama-3.2-1B-Instruct","label":"Llama 3.2 1B","family":"Llama","paramsB":1,"size":"约 2.5 GB"},{"repo":"meta-llama/Llama-3.2-3B-Instruct","label":"Llama 3.2 3B","family":"Llama","paramsB":3,"size":"约 6 GB"},{"repo":"meta-llama/Llama-3.1-8B-Instruct","label":"Llama 3.1 8B","family":"Llama","paramsB":8,"size":"约 16 GB"},{"repo":"microsoft/Phi-3-mini-4k-instruct","label":"Phi-3 mini","family":"Phi","paramsB":3.8,"size":"约 8 GB"},{"repo":"google/gemma-2-2b-it","label":"Gemma 2 2B","family":"Gemma","paramsB":2,"size":"约 5 GB"},{"repo":"google/gemma-2-9b-it","label":"Gemma 2 9B","family":"Gemma","paramsB":9,"size":"约 18 GB"}])JSON";
+bool parseCatalog(const QByteArray& raw, QJsonArray& out) {
+    QJsonParseError err; QJsonDocument doc = QJsonDocument::fromJson(raw, &err);
+    if (err.error != QJsonParseError::NoError) return false;
+    if (doc.isArray()) out = doc.array();
+    else if (doc.isObject()) out = doc.object().value("models").toArray();
+    return !out.isEmpty();
+}
+} // namespace
 
 Bridge::Bridge(QObject* parent) : QObject(parent) {
     data_dir_ = resolveDataDir();
@@ -256,24 +282,97 @@ void Bridge::refreshMessages() {
         row["text"] = line.text;
         row["path"] = line.path;
         row["badge"] = badgeFor(line.path, lang_ == "zh");
+        row["error"] = line.error;
         messages_.push_back(row);
     }
     emit messagesChanged();
 }
 
+
 void Bridge::refreshModels() {
+    QJsonArray arr;
+    bool fromCache = false;
+    const QString cachePath = QString::fromStdWString(data_dir_) + QStringLiteral("/models_catalog_cache.json");
+    QFile cacheFile(cachePath);
+    if (cacheFile.open(QIODevice::ReadOnly)) { fromCache = parseCatalog(cacheFile.readAll(), arr); }
+    if (!fromCache) parseCatalog(QByteArray(kBuiltinCatalog), arr);
+    // group by family, params ascending inside family (stable: family first appearance order preserved by sort key family+params)
+    QVector<QJsonObject> objs;
+    for (const auto& v : arr) if (v.isObject()) objs.push_back(v.toObject());
+    std::sort(objs.begin(), objs.end(), [](const QJsonObject& a, const QJsonObject& b){
+        const QString fa=a.value("family").toString(), fb=b.value("family").toString();
+        if (fa!=fb) return fa<fb;
+        return a.value("paramsB").toDouble()<b.value("paramsB").toDouble();
+    });
     models_.clear();
-    for (int i = 0; i < 4; ++i) {
-        const bool installed = weights_present(model_directory(kModels[i].repo));
+    for (const auto& o : objs) {
+        const QString repo = o.value("repo").toString();
+        if (repo.isEmpty()) continue;
         QVariantMap row;
-        row["label"] = QString::fromUtf8(kModels[i].label);
-        row["size"] = QString::fromUtf8(kModels[i].size);
-        row["note"] = lang_ == "zh" ? QString::fromUtf8(kModels[i].noteZh) : QString::fromUtf8(kModels[i].noteEn);
-        row["installed"] = installed;
-        row["current"] = settings_.model_repo == kModels[i].repo;
+        row["repo"]=repo; row["label"]=o.value("label").toString(repo); row["size"]=o.value("size").toString();
+        row["family"]=o.value("family").toString(); row["paramsB"]=o.value("paramsB").toDouble();
+        row["note"]=o.value("family").toString()+QStringLiteral(" · ")+QString::number(o.value("paramsB").toDouble(),'f', o.value("paramsB").toDouble()<1?1:0)+QStringLiteral("B · 可选解码头");
+        row["installed"]=weights_present(model_directory(repo.toStdString()));
+        row["current"]=settings_.model_repo==repo.toStdString();
         models_.push_back(row);
     }
+    catalog_status_ = fromCache ? L("列表来源：本地缓存（可点更新列表刷新）", "List: local cache (use Update list)")
+                                : L("列表来源：内置目录", "List: built-in catalog");
     emit modelsChanged();
+}
+void Bridge::updateModelCatalog() {
+    auto* nam = new QNetworkAccessManager(this);
+    QNetworkRequest req{QUrl(QString::fromLatin1(kCatalogUrl))};
+    QNetworkReply* reply = nam->get(req);
+    connect(reply, &QNetworkReply::finished, this, [this, reply, nam]() {
+        reply->deleteLater(); nam->deleteLater();
+        const QByteArray raw = reply->readAll();
+        QJsonArray arr;
+        if (reply->error()==QNetworkReply::NoError && parseCatalog(raw, arr)) {
+            const QString cachePath = QString::fromStdWString(data_dir_) + QStringLiteral("/models_catalog_cache.json");
+            QFile f(cachePath); if (f.open(QIODevice::WriteOnly)) f.write(raw);
+            catalog_status_ = L("模型列表已更新并缓存", "Model list updated and cached");
+        } else {
+            catalog_status_ = L("更新失败，已回退内置/缓存列表", "Update failed; using built-in/cache list");
+        }
+        refreshModels(); emit pipelineChanged();
+    });
+}
+void Bridge::repairPipeline() {
+    if (pipeline_busy_ || busy_) return;
+    pipeline_busy_ = true; pipeline_report_ = L("正在自检 Valhalla 管线…", "Checking the Valhalla pipeline...");
+    emit pipelineChanged();
+    const bool zh = lang_ == "zh";
+    std::thread([this, zh]() {
+        QStringList lines;
+        const QString binary = QString::fromStdWString(find_binary());
+        lines << (binary.isEmpty() ? L("引擎：未找到 valhalla_base.exe / .enc", "Engine: valhalla_base.exe / .enc not found")
+                                   : L("引擎：已找到（含 .enc 解密路径） ", "Engine: found (incl. .enc decrypt path) ") + binary);
+        lines << (L("CUDA：", "CUDA: ") + QString::fromStdWString(format_cuda(zh)));
+        const bool installed = weights_present(model_directory(settings_.model_repo));
+        lines << (L("模型：", "Model: ") + QString::fromStdString(settings_.model_repo) + (installed ? L(" 已就位", " present") : L(" 未下载", " not downloaded")));
+        std::wstring cerr; const bool cacheOk = clear_model_decrypt_cache(cerr);
+        lines << (cacheOk ? L("初始化：已清模型解密缓存 .cache", "Init: cleared model decrypt cache .cache")
+                          : L("初始化：清缓存失败 ", "Init: clear cache failed ") + QString::fromStdWString(cerr));
+        stop_warm_process();
+        lines << L("初始化：已停 warm 进程", "Init: stopped warm process");
+        QString feat;
+        if (installed) {
+            const std::wstring werr = ensure_framework(model_directory(settings_.model_repo));
+            lines << (werr.empty() ? L("预热：引擎已预热，weights 常驻状态见模型状态", "Warm-up: engine warmed; see Model status for residency")
+                                   : L("预热失败：", "Warm-up failed: ") + QString::fromStdWString(werr));
+            FeatureReport rep = run_feature_probe(zh);
+            feat = QString::fromStdWString(rep.text);
+        } else {
+            feat = L("未下载当前模型，跳过预热与 feature check（先在模型与下载中下载）", "No current model downloaded; skipped warm-up/feature check (download one first)");
+        }
+        const QString report = lines.join("\n") + "\n" + feat;
+        QMetaObject::invokeMethod(this, [this, report]() {
+            pipeline_busy_ = false; pipeline_report_ = report;
+            emit pipelineChanged(); emit runtimeChanged(); refreshModels();
+            setStatus(L("Valhalla 管线修复/初始化完成，详见设置页", "Pipeline repair/init done; see Settings"));
+        }, Qt::QueuedConnection);
+    }).detach();
 }
 
 void Bridge::loadActive() {
@@ -395,8 +494,9 @@ void Bridge::send(const QString& raw) {
     setStatus({});
 
     const std::string knowledge = compose_corpus(kb_, settings_.knowledge, question.toStdString());
-    const std::string mode = settings_.strategy;
-    const std::string session = (settings_.keep_session || mode == "followup") ? session_json_ : std::string();
+    const std::string mode = "open"; // Fixed Valhalla mode: engine decode is hybrid; no UI strategy switch.
+    last_question_ = question;
+    const std::string session = settings_.keep_session ? session_json_ : std::string();
     const auto history = history_;
     const std::string screen = screen_context_;
     const bool allow_control = settings_.allow_control;
@@ -409,9 +509,9 @@ void Bridge::send(const QString& raw) {
         QMetaObject::invokeMethod(this, [this, result, question, started]() {
             setBusy(false);
             if (!result.error.empty()) {
-                lines_.push_back(Line{false, QString::fromStdString(result.error), {}});
+                Line errLine; errLine.user=false; errLine.error=true; errLine.text=QString::fromStdString(result.error); lines_.push_back(errLine);
             } else {
-                if (settings_.keep_session || settings_.strategy == "followup") session_json_ = result.session_json;
+                if (settings_.keep_session) session_json_ = result.session_json;
                 else session_json_.clear();
                 std::wstring script;
                 std::wstring visible = strip_actions(utf8_to_wide(result.answer), script);
@@ -503,30 +603,25 @@ void Bridge::importFiles(const QString& domain, const QVariantList& urls) {
                   .arg(total.failed));
 }
 
+
 void Bridge::useOrDownloadModel(int index) {
-    if (busy_ || index < 0 || index >= 4) return;
-    if (weights_present(model_directory(kModels[index].repo))) {
-        settings_.model_repo = kModels[index].repo;
-        saveSettings();
-        session_json_.clear();
-        refreshModels();
-        return;
+    if (busy_ || index < 0 || index >= models_.size()) return;
+    const QString repo = models_.at(index).toMap().value("repo").toString();
+    if (repo.isEmpty()) return;
+    if (weights_present(model_directory(repo.toStdString()))) {
+        settings_.model_repo = repo.toStdString();
+        save_settings(data_dir_ + L"\\settings.json", settings_);
+        refreshModels(); emit pipelineChanged(); return;
     }
     setBusy(true);
-    const std::string repo = kModels[index].repo;
-    std::thread([this, index, repo]() {
-        std::wstring error;
-        const bool ok = download_model(repo, nullptr, nullptr, error);
-        QMetaObject::invokeMethod(this, [this, index, ok, error]() {
+    const std::string repoStd = repo.toStdString();
+    std::thread([this, repoStd]() {
+        std::wstring error; const bool ok = download_model(repoStd, nullptr, nullptr, error);
+        QMetaObject::invokeMethod(this, [this, ok, error, repoStd]() {
             setBusy(false);
-            if (ok) {
-                settings_.model_repo = kModels[index].repo;
-                saveSettings();
-                session_json_.clear();
-            } else if (!error.empty()) {
-                setStatus(QString::fromStdWString(error));
-            }
-            refreshModels();
+            if (ok) { settings_.model_repo = repoStd; save_settings(data_dir_ + L"\\settings.json", settings_); }
+            else if (!error.empty()) setStatus(QString::fromStdWString(error));
+            refreshModels(); emit pipelineChanged();
         }, Qt::QueuedConnection);
     }).detach();
 }
@@ -589,6 +684,30 @@ void Bridge::recognize() {
     emit screenChanged();
 }
 
+void Bridge::ocrImport(const QVariantList& urls) {
+    if (busy_ || urls.isEmpty()) return;
+    QStringList chunks;
+    for (const QVariant& value : urls) {
+        const QString path = QUrl(value.toString()).toLocalFile();
+        if (path.isEmpty()) continue;
+        QImage image(path);
+        if (image.isNull()) { chunks.push_back(QFileInfo(path).fileName() + QStringLiteral(": ") + L("图片打不开", "Cannot open image")); continue; }
+        const QImage bgra = image.convertToFormat(QImage::Format_ARGB32);
+        const OcrPass pass = recognize_bgra(bgra.bits(), bgra.width(), bgra.height(), static_cast<int>(bgra.bytesPerLine()));
+        QStringList lines;
+        static const QRegularExpression cjkSpace(QStringLiteral("([\\x{4e00}-\\x{9fff}])\\s+(?=[\\x{4e00}-\\x{9fff}])"));
+        for (const auto& line : pass.lines) { QString s = QString::fromStdWString(line.text); s.replace(cjkSpace, "\\1"); lines.push_back(s); }
+        chunks.push_back(lines.join("\n"));
+    }
+    ocr_import_text_ = chunks.join("\n\n");
+    screen_context_ = ocr_import_text_.toStdString();
+    setStatus(ocr_import_text_.isEmpty() ? L("OCR 导入未读出文字", "OCR import read no text") : L("OCR 导入完成，已带入对话上下文", "OCR import done; added to chat context"));
+    emit screenChanged();
+}
+void Bridge::retryLast() {
+    if (busy_ || last_question_.isEmpty()) return;
+    send(last_question_);
+}
 void Bridge::probe() {
     if (busy_) return;
     setBusy(true);
